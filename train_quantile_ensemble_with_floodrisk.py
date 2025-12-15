@@ -1,0 +1,522 @@
+#!/usr/bin/env python
+# coding: utf-8
+"""
+Quantile Ensemble Training with Flood Risk Indicator
+
+This script trains quantile ensemble models for streamflow prediction and
+generates flood risk indicators for each station. It combines:
+- Quantile ensemble training (q05, median, q95)
+- Flood threshold calculation based on historical data
+- Flood risk classification (High/Moderate/Low/Unlikely)
+- Comprehensive visualization of predictions and risk levels
+
+The flood risk indicator uses the quantile predictions to classify flood
+probability into four categories based on exceedance of historical thresholds.
+"""
+
+import os
+import argparse
+import pandas as pd
+import numpy as np
+import tqdm
+
+from src.data import PrepareData, read_data_from_file
+from src.window import MultiWindow
+from src.model import QuantileEnsemble
+from src.flood_risk import (
+    calc_flood_threshold,
+    calculate_flood_alerts,
+    save_flood_outputs,
+    calculate_alert_statistics,
+    print_alert_summary,
+    calculate_prediction_quality
+)
+from src.visualization import plot_flood_risk_analysis
+
+
+# ==============================================================================
+# HELPER FUNCTIONS
+# ==============================================================================
+
+def load_and_prepare_data(data_dir):
+    """
+    Load CAMELS dataset and initialize data preparation object.
+    
+    Parameters:
+    -----------
+    data_dir : str
+        Path to the CAMELS dataset directory
+    
+    Returns:
+    --------
+    camels_data : PrepareData
+        Initialized data preparation object
+    """
+    timeseries_data, summary_data = read_data_from_file(data_dir)
+    camels_data = PrepareData(timeseries_data, summary_data)
+    return camels_data
+
+
+def select_stations(camels_data, state):
+    """
+    Select and filter stations by state.
+    
+    Parameters:
+    -----------
+    camels_data : PrepareData
+        Data preparation object with station metadata
+    state : str
+        State/territory code to filter by
+    
+    Returns:
+    --------
+    tuple : (selected_stations, station_names, characteristics)
+        List of station IDs, station names, and full characteristics DataFrame
+    """
+    # Remove duplicate stations from metadata
+    camels_data.summary_data = camels_data.summary_data.T.drop_duplicates().T
+    
+    # Extract relevant catchment characteristics
+    characteristics = camels_data.summary_data[[
+        'state_outlet', 'station_name', 'river_region',
+        'Q5', 'Q95', 'catchment_area',
+        'lat_outlet', 'long_outlet', 'runoff_ratio'
+    ]]
+    
+    # Filter by state and sort by runoff ratio
+    char_selected = characteristics[characteristics.state_outlet == state]
+    selected_stations = char_selected.sort_values(
+        'runoff_ratio', 
+        ascending=False
+    ).index.tolist()
+    
+    station_names = char_selected.station_name
+    
+    return selected_stations, station_names, characteristics
+
+
+
+
+
+def train_station_model(station, camels_data, variable_ts, args):
+    """
+    Train quantile ensemble model for a single station.
+    
+    Parameters:
+    -----------
+    station : str
+        Station identifier
+    camels_data : PrepareData
+        Data preparation object
+    variable_ts : list
+        List of timeseries variable names
+    args : argparse.Namespace
+        Command line arguments
+    
+    Returns:
+    --------
+    tuple : (quantile_ensemble, multi_window, test_min, test_scale) or None
+        Trained model, window object, and scaling parameters, or None if failed
+    """
+    # Load train/test data for this station
+    res = camels_data.get_train_val_test(
+        source=variable_ts, 
+        stations=[station]
+    )
+    
+    if res is None:
+        print(f'Warning: No data available for station {station}, skipping...')
+        return None
+    
+    train_df_single, test_df_single = res
+    print(f'Data loaded: Train shape={train_df_single.shape}, Test shape={test_df_single.shape}')
+    
+    # Create time series windows
+    multi_window = MultiWindow(
+        input_width=args.input_width,
+        label_width=args.output_width,
+        shift=args.shift,
+        train_df=train_df_single,
+        test_df=test_df_single,
+        stations=[station],
+        label_columns=['streamflow_MLd_inclInfilled'],
+        batch_size=32
+    )
+    
+    # Train quantile ensemble models
+    print(f'Training QuantileEnsemble models (q05, median, q95)...')
+    quantile_model = QuantileEnsemble(
+        window=multi_window,
+        conv_width=args.output_width
+    )
+    print(f'✓ Models trained successfully')
+    
+    return quantile_model, multi_window
+
+
+def evaluate_station_model(station, quantile_model, test_min, test_scale):
+    """
+    Evaluate model performance for a station.
+    
+    Parameters:
+    -----------
+    station : str
+        Station identifier
+    quantile_model : QuantileEnsemble
+        Trained quantile ensemble model
+    test_min : float
+        Minimum value for inverse scaling
+    test_scale : float
+        Scale value for inverse scaling
+    
+    Returns:
+    --------
+    tuple : (summary_regular, summary_q05, summary_q95, conf_score)
+        Performance summaries for each quantile and confidence score
+    """
+    summary_regular, summary_q05, summary_q95, conf_score = quantile_model.summary(
+        station, 
+        _min=test_min, 
+        _scale=test_scale, 
+        conf_score=True
+    )
+    
+    print(f'Performance - MSE: {summary_regular["MSE"]:.4f}, NSE: {summary_regular["NSE"]:.4f}')
+    
+    return summary_regular, summary_q05, summary_q95, conf_score
+
+
+
+
+
+def process_flood_risk_for_station(station, station_name, quantile_model, multi_window,
+                                   train_df, camels_data, variable_ts, test_min, 
+                                   test_scale, threshold, args, output_dir):
+    """
+    Calculate flood risk indicators and generate visualizations for a station.
+    
+    Parameters:
+    -----------
+    station : str
+        Station identifier
+    station_name : str
+        Human-readable station name
+    quantile_model : QuantileEnsemble
+        Trained quantile ensemble model
+    multi_window : MultiWindow
+        Window object containing test data
+    train_df : pd.DataFrame
+        Training data for all stations
+    camels_data : PrepareData
+        Data preparation object
+    variable_ts : list
+        List of timeseries variable names
+    test_min : float
+        Minimum value for inverse scaling
+    test_scale : float
+        Scale value for inverse scaling
+    threshold : float
+        Flood threshold value
+    args : argparse.Namespace
+        Command line arguments
+    output_dir : str
+        Base output directory
+    """
+    print(f'\nCalculating flood threshold...')
+    print(f'✓ Flood threshold: {threshold:.4f}')
+    
+    # Get predictions and actual values
+    predictions = (quantile_model.predictions(station) - test_min) / test_scale
+    actual_values = (multi_window.test_windows(station) - test_min) / test_scale
+    
+    # Use maximum values across forecast horizon for flood detection
+    pred_max = predictions.max(axis=1)
+    actual_max = actual_values.max(axis=1)
+    
+    # Calculate and display MSE for each quantile
+    print(f'\nPrediction Quality:')
+    print(f'  MSE (q05):    {np.mean((pred_max[:, 0] - actual_max)**2):.4f}')
+    print(f'  MSE (median): {np.mean((pred_max[:, 1] - actual_max)**2):.4f}')
+    print(f'  MSE (q95):    {np.mean((pred_max[:, 2] - actual_max)**2):.4f}')
+    
+    # Extract and align date values
+    df_date = multi_window.test_df[station].reset_index()
+    date_values = df_date['date'][args.input_width + args.shift - 1:]
+    
+    # Ensure date_values matches prediction length
+    if len(date_values) > len(pred_max):
+        date_values = date_values[:len(pred_max)]
+    elif len(date_values) < len(pred_max):
+        pred_max = pred_max[:len(date_values)]
+        actual_max = actual_max[:len(date_values)]
+    
+    # Calculate flood alerts
+    alert = calculate_flood_alerts(pred_max, threshold)
+    
+    # Display alert distribution
+    alert_counts = {
+        'High': np.sum(alert == 2),
+        'Moderate': np.sum(alert == 1),
+        'Low': np.sum(alert == 0),
+        'Unlikely': np.sum(alert == -1)
+    }
+    print(f'\nFlood Alert Distribution:')
+    print(f'  High Chance:      {alert_counts["High"]:4d} days ({alert_counts["High"]/len(alert)*100:.1f}%)')
+    print(f'  Moderate Chance:  {alert_counts["Moderate"]:4d} days ({alert_counts["Moderate"]/len(alert)*100:.1f}%)')
+    print(f'  Low Chance:       {alert_counts["Low"]:4d} days ({alert_counts["Low"]/len(alert)*100:.1f}%)')
+    print(f'  Flood Unlikely:   {alert_counts["Unlikely"]:4d} days ({alert_counts["Unlikely"]/len(alert)*100:.1f}%)')
+    
+    # Save outputs
+    station_output_dir = f'{output_dir}/{station}'
+    save_flood_outputs(station_output_dir, pred_max, actual_max, alert, threshold)
+    
+    # Generate visualization
+    print(f'\nGenerating flood risk visualization...')
+    plot_path = f'{station_output_dir}/flood_risk_analysis.png'
+    plot_flood_risk_analysis(
+        station, station_name, date_values, actual_max,
+        pred_max, alert, threshold, plot_path
+    )
+    print(f'✓ Plot saved to: {plot_path}')
+
+
+def export_results(output_dir, summary_data_reg, summary_data_q05, 
+                  summary_data_q95, summary_conf_score, flood_thresholds, summary_cols):
+    """
+    Export aggregated results to CSV files.
+    
+    Parameters:
+    -----------
+    output_dir : str
+        Output directory for results
+    summary_data_reg : list
+        Median prediction results
+    summary_data_q05 : list
+        Lower quantile results
+    summary_data_q95 : list
+        Upper quantile results
+    summary_conf_score : list
+        Confidence scores
+    flood_thresholds : dict
+        Flood thresholds by station
+    summary_cols : list
+        Column names for summary metrics
+    """
+    # Convert to DataFrames
+    results_reg_df = pd.DataFrame(summary_data_reg)
+    results_q05_df = pd.DataFrame(summary_data_q05)
+    results_q95_df = pd.DataFrame(summary_data_q95)
+    results_conf_score_df = pd.DataFrame(summary_conf_score, columns=['conf_score'])
+    
+    # Display results
+    print('\n' + '='*80)
+    print('FINAL RESULTS ACROSS ALL RUNS')
+    print('='*80)
+    print('\nMedian Predictions:')
+    print(results_reg_df)
+    print('\nLower Quantile (Q05) Predictions:')
+    print(results_q05_df)
+    print('\nUpper Quantile (Q95) Predictions:')
+    print(results_q95_df)
+    print('\nConfidence Score:')
+    print(results_conf_score_df)
+    print('='*80)
+    
+    # Export to CSV
+    results_reg_df.to_csv(f'{output_dir}/results_reg.csv', index=True)
+    results_q05_df.to_csv(f'{output_dir}/results_q05.csv', index=True)
+    results_q95_df.to_csv(f'{output_dir}/results_q95.csv', index=True)
+    results_conf_score_df.to_csv(f'{output_dir}/results_conf_score.csv', index=True)
+    
+    # Save flood thresholds
+    threshold_df = pd.DataFrame.from_dict(
+        flood_thresholds, 
+        orient='index', 
+        columns=['threshold']
+    )
+    threshold_df.to_csv(f'{output_dir}/flood_thresholds.csv')
+    
+    print(f'\nResults exported to: {output_dir}')
+
+
+# ==============================================================================
+# COMMAND LINE ARGUMENTS CONFIGURATION
+# ==============================================================================
+
+parser = argparse.ArgumentParser(
+    description='Train quantile ensemble models with flood risk indicators'
+)
+
+# Data configuration
+parser.add_argument('--data-dir', type=str, 
+                    default='/srv/scratch/z5370003/data/camels-dropbox/',
+                    help='Path to the data directory')
+parser.add_argument('--state', type=str, default='SA',
+                    help='State to train the model on')
+parser.add_argument('--n-stations', type=int, default=10,
+                    help='Number of stations to process')
+
+# Model configuration
+parser.add_argument('--input-width', type=int, default=5,
+                    help='Input width for the window')
+parser.add_argument('--output-width', type=int, default=5,
+                    help='Output width for the window')
+parser.add_argument('--shift', type=int, default=5,
+                    help='Shift for the window')
+parser.add_argument('--num-runs', type=int, default=1,
+                    help='Number of training runs')
+
+# Flood risk configuration  
+parser.add_argument('--flood-threshold-percentile', type=float, default=0.95,
+                    help='Percentile for flood threshold (0-1)')
+
+args = parser.parse_args()
+
+
+# ==============================================================================
+# MAIN EXECUTION
+# ==============================================================================
+
+def main():
+    """
+    Main execution function for training quantile ensemble models with flood risk analysis.
+    """
+    print('='*80)
+    print('QUANTILE ENSEMBLE TRAINING WITH FLOOD RISK INDICATORS')
+    print('='*80)
+    
+    # Load CAMELS data
+    print(f'\nLoading CAMELS data from: {args.data_dir}')
+    camels_data = read_data_from_file(args.data_dir)
+    print('✓ Data loaded successfully')
+    
+    # Select stations for the specified state
+    selected_stations, station_names, characteristics = select_stations(
+        camels_data, 
+        args.state
+    )
+    print(f'✓ Selected {len(selected_stations)} stations in {args.state}')
+    
+    # Define time series variables
+    variable_ts = [
+        'streamflow_MLd_inclInfilled',
+        'precipitation_deficit',
+        'year_sin', 'year_cos',
+        'tmax_AWAP',
+        'tmin_AWAP'
+    ]
+    
+    # Performance metrics to track
+    summary_cols = ['MSE', 'NSE']
+    
+    # Initialize results storage
+    summary_data_q05 = []
+    summary_data_q95 = []
+    summary_data_reg = []
+    summary_conf_score = []
+    quantile_ensemble = {}
+    flood_thresholds = {}
+    
+    # Create output directory
+    output_dir = f'results/Stage_FloodRisk/{args.state}-{args.output_width}'
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Load all training data once for threshold calculation
+    print('\nLoading training/test data for all stations...')
+    train_df, test_df = camels_data.get_train_val_test(
+        source=variable_ts, 
+        stations=selected_stations
+    )
+    print('✓ Data loaded')
+
+    # Main training loop
+    for n in tqdm.trange(args.num_runs):
+        print(f'\nStarting run {n+1} of {args.num_runs}.')
+        
+        # Initialize result collectors for this run
+        results_regular = []
+        results_q05 = []
+        results_q95 = []
+        results_conf_score = []
+        
+        # Process each station
+        for idx, station in enumerate(selected_stations):
+            # Stop if we've processed the requested number of stations
+            if idx >= args.n_stations:
+                break
+            
+            print(f'\n{"="*80}')
+            print(f'Processing Station {idx+1}/{min(args.n_stations, len(selected_stations))}: {station}')
+            station_display_name = station_names[station] if station in station_names.index else "Unknown"
+            print(f'Station Name: {station_display_name}')
+            print(f'{"="*80}')
+            
+            # Train model for this station
+            model_result = train_station_model(station, camels_data, variable_ts, args)
+            if model_result is None:
+                continue
+            
+            quantile_model, multi_window = model_result
+            quantile_ensemble[station] = quantile_model
+            
+            # Get scaling parameters for individual station
+            # scaler_test has only 6 features (one station), streamflow is at index 1
+            test_min = camels_data.scaler_test.min_[1]
+            test_scale = camels_data.scaler_test.scale_[1]
+            
+            # Evaluate model
+            summary_regular, summary_q05, summary_q95, conf_score = evaluate_station_model(
+                station, quantile_model, test_min, test_scale
+            )
+            
+            # Store results
+            results_regular.append(summary_regular)
+            results_q05.append(summary_q05)
+            results_q95.append(summary_q95)
+            results_conf_score.append(conf_score)
+            
+            # Process flood risk (only on first run)
+            if n == 0:
+                threshold_prob, threshold, threshold_year = calc_flood_threshold(
+                    station, train_df, camels_data, variable_ts,
+                    top=args.flood_threshold_percentile
+                )
+                flood_thresholds[station] = threshold
+                
+                process_flood_risk_for_station(
+                    station, station_display_name, quantile_model, multi_window,
+                    train_df, camels_data, variable_ts, test_min, test_scale,
+                    threshold, args, output_dir
+                )
+        
+        # Aggregate results for this run, handling NaN values appropriately
+        if len(results_regular) > 0:
+            results_reg = pd.DataFrame(results_regular)[summary_cols].mean(skipna=True).to_dict()
+            results_q05_agg = pd.DataFrame(results_q05)[summary_cols].mean(skipna=True).to_dict()
+            results_q95_agg = pd.DataFrame(results_q95)[summary_cols].mean(skipna=True).to_dict()
+            
+            # Calculate mean confidence score with NaN handling
+            conf_score_mean = np.nanmean(results_conf_score) if results_conf_score else 0.0
+            
+            # Store aggregated results
+            summary_data_reg.append(results_reg)
+            summary_data_q05.append(results_q05_agg)
+            summary_data_q95.append(results_q95_agg)
+            summary_conf_score.append(conf_score_mean)
+            
+            print(f'\n✓ Run {n+1} complete - MSE (median): {results_reg["MSE"]:.4f}')
+    
+    # Export all results
+    if summary_data_reg:
+        export_results(
+            output_dir, summary_data_reg, summary_data_q05,
+            summary_data_q95, summary_conf_score, flood_thresholds, summary_cols
+        )
+        print('\nTraining and flood risk analysis complete!')
+    else:
+        print('\nNo valid results obtained. Please check your data and configuration.')
+
+
+
+if __name__ == '__main__':
+    main()

@@ -1,6 +1,7 @@
 import geopandas as gpd
 import pandas as pd
 import numpy as np
+import datetime as dt
 import matplotlib.pyplot as plt
 import seaborn as sns 
 import folium
@@ -19,9 +20,18 @@ def read_data_from_file(data_dir):
     # Read all csv files from directory
     # Sort files into timeseries and summary data
     for file_path in glob.glob(data_dir + '**/*.csv', recursive=True):
+        # Skip checkpoint files and other problematic files
+        if '.ipynb_checkpoints' in file_path or 'checkpoint' in file_path.lower():
+            continue
+            
         file_name = os.path.splitext(os.path.basename(file_path))[0]
         # print(file_path, file_name)
-        df = pd.read_csv(file_path, low_memory=False) 
+        
+        try:
+            df = pd.read_csv(file_path, low_memory=False)
+        except Exception as e:
+            print(f"Warning: Could not read {file_path}: {e}")
+            continue
     
         #skip these files
         if file_name in ['streamflow_QualityCodes']:
@@ -124,6 +134,8 @@ def plot_catchments(camels_data, data_dir):
 
 
 
+
+
 class PrepareData():
     
     def __init__(self, timeseries_data, summary_data):
@@ -189,10 +201,41 @@ class PrepareData():
     def get_timeseries_data(self, source, stations):      
         # filter by source
         self.data_filtered = self.timeseries_data[self.timeseries_data['source'].isin(source)]
+
+        # filter by dates
+        self.data_filtered = self.data_filtered.loc[(self.data_filtered['date'] >= dt.datetime(1980, 1, 1)) & (self.data_filtered['date'] < dt.datetime(2015, 1, 1))]
         # pivot data by station
         self.data_filtered = self.data_filtered[['date', 'source'] + stations].pivot(index='date', columns='source', values=stations)
         # get rows with no nan
-        self.data_filtered = self.data_filtered[~self.data_filtered.isnull().any(axis=1)]
+        # self.data_filtered = self.data_filtered[~self.data_filtered.isnull().any(axis=1)]
+
+        # Check if more than 10% of the data is missing
+        print(self.data_filtered.info())
+        if self.data_filtered.isnull().any(axis=1).sum() > 0.1 * self.data_filtered.shape[0]:
+            print(f"Station {stations} has more than 10% missing data. Skipping...")
+            return None
+
+        for col in self.data_filtered.columns:
+            
+            print(f"The {col[1]} column for station {stations} has {self.data_filtered[col].isna().sum()} missing values. Filling with previous year data...")
+            
+            null_data = self.data_filtered[col][(self.data_filtered[col].isna()) & (self.data_filtered.index > dt.datetime(1980, 12, 31))]
+
+            missing_index = [ix for ix in null_data.index - pd.offsets.Day(365) if ix not in self.data_filtered.index]
+
+            null_indices_to_fill = null_data.index[(null_data.index - pd.offsets.Day(365)).isin(self.data_filtered.index)]
+
+            print(f"Missing index: {len(missing_index)}/{len(null_data.index)}")
+
+            self.data_filtered.loc[null_indices_to_fill, col] = self.data_filtered.loc[null_indices_to_fill - pd.offsets.Day(365), col].values
+
+            print(f"The {col[1]} column for station {stations} has {self.data_filtered[col].isna().sum()} missing values after filling with previous year data.")
+
+        # Interpolate missing values
+        self.data_filtered.interpolate(method='linear', inplace=True)
+
+        print(f"Interpolated missing values for {stations} station.")
+        print(self.data_filtered.info())
         
         return self.data_filtered
         
@@ -203,6 +246,7 @@ class PrepareData():
      
         # filter by source
         self.data_filtered = self.timeseries_data[self.timeseries_data['source'].isin(timeseries_source)]
+
         # pivot data by station
         self.data_filtered = self.data_filtered[['date', 'source'] + stations].pivot(index='date', columns='source', values=stations)
         # get rows with no nan
@@ -225,9 +269,13 @@ class PrepareData():
         assert (train + test) == 1
      
         summary_source = [i for i in source if i in list(self.summary_data.columns)]
-        timeseries_source = [i for i in source if i not in list(self.summary_data.columns)]        
+        timeseries_source = [i for i in source if i not in list(self.summary_data.columns)]
         
-        all_data = self.get_timeseries_data(timeseries_source, stations).loc[start:end]
+        all_data = self.get_timeseries_data(timeseries_source, stations)
+        if all_data is None:
+            return None
+
+        all_data = all_data.loc[start:end]
         n_rows_all = len(all_data)
         
         all_data_discarded = all_data.iloc[int(n_rows_all*discard):]

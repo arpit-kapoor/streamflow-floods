@@ -23,26 +23,32 @@ from sklearn.metrics import mean_squared_error, accuracy_score, precision_score,
 from .window import WindowGenerator
 
 
-class CustomLoss():  
-    def qloss_95(y_true, y_pred, q=0.95):
-        e = (y_true-y_pred)    
-        return tf.square(y_true-y_pred) + tf.math.maximum(q*e, (q-1)*e)
-        
-    def qloss_90(y_true, y_pred, q=0.9):
-        e = (y_true-y_pred)    
-        return tf.square(y_true-y_pred) + tf.math.maximum(q*e, (q-1)*e)
+class QuantileLoss():
+    @staticmethod
+    def quantile_loss(q, y_true, y_pred):
+        e = (y_true - y_pred)
+        return tf.reduce_mean(tf.maximum(q * e, (q - 1) * e))
     
-    def qloss_70(y_true, y_pred, q=0.7):
-        e = (y_true-y_pred)    
-        return tf.square(y_true-y_pred) + tf.math.maximum(q*e, (q-1)*e)
+    @staticmethod
+    def qloss_05(y_true, y_pred):
+        return QuantileLoss.quantile_loss(0.05, y_true, y_pred)
     
-    def qloss_50(y_true, y_pred, q=0.5):
-        e = (y_true-y_pred)    
-        return tf.square(y_true-y_pred) + tf.math.maximum(q*e, (q-1)*e)
+    @staticmethod
+    def qloss_50(y_true, y_pred):
+        return QuantileLoss.quantile_loss(0.5, y_true, y_pred)
+    
+    @staticmethod
+    def qloss_70(y_true, y_pred):
+        return QuantileLoss.quantile_loss(0.7, y_true, y_pred)
+    
+    @staticmethod
+    def qloss_90(y_true, y_pred):
+        return QuantileLoss.quantile_loss(0.9, y_true, y_pred)
+    
+    @staticmethod
+    def qloss_95(y_true, y_pred):
+        return QuantileLoss.quantile_loss(0.95, y_true, y_pred)
 
-    def qloss_05(y_true, y_pred, q=0.05):
-        e = (y_true-y_pred)    
-        return tf.square(y_true-y_pred) + tf.math.maximum(q*e, (q-1)*e)
     
 class Model():
     MAX_EPOCHS = 150
@@ -60,8 +66,10 @@ class Model():
                     optimizer=tf.optimizers.Adam(),
                     metrics=[tf.metrics.MeanAbsoluteError()])
 
+        print(f"  Training model for {self.MAX_EPOCHS} epochs...")
         history = model.fit(window.train, epochs=self.MAX_EPOCHS,
-                            verbose=1)
+                            verbose=0)
+        print(f"  Model training complete.")
 
         return history
 
@@ -74,53 +82,53 @@ class Model():
 
         return len(events)
     
-    def summary(self, station=None):
+    def summary(self, station=None, **kwargs):
         summary_dict = {}
         
         summary_dict['model_name'] = self.model_name
         summary_dict['input_width'] = self.window.input_width
         summary_dict['label_width'] = self.window.label_width
              
-        if station == None:
+        if station is None:
             summary_dict['station'] = self.window.station
             summary_dict['inputs'] = str(list(self.train_df.columns))
-            summary_dict['NSE'] = self.get_NSE()
+            summary_dict['NSE'] = self.get_NSE(**kwargs)
         else:
             summary_dict['station'] = station
             example_station = self.train_df.columns.get_level_values(0)[0]
             summary_dict['inputs'] = str(list(self.train_df[example_station].columns))
-            summary_dict['NSE'] = self.get_NSE(station)  
+            summary_dict['NSE'] = self.get_NSE(station, **kwargs)  
                              
-        summary_dict['SER_1%'] = self.average_model_error(station, cut=1)
-        summary_dict['SER_2%'] = self.average_model_error(station, cut=2)    
-        summary_dict['SER_5%'] = self.average_model_error(station, cut=5)        
-        summary_dict['SER_10%'] = self.average_model_error(station, cut=10)  
-        summary_dict['SER_25%'] = self.average_model_error(station, cut=25)  
-        summary_dict['SER_50%'] = self.average_model_error(station, cut=50)  
-        summary_dict['SER_75%'] = self.average_model_error(station, cut=75)  
-        summary_dict['RMSE'] = self.average_model_error(station, cut=100)
+        summary_dict['SER_1%'] = self.average_model_error(station, cut=1, **kwargs)
+        summary_dict['SER_2%'] = self.average_model_error(station, cut=2, **kwargs)    
+        summary_dict['SER_5%'] = self.average_model_error(station, cut=5, **kwargs)        
+        summary_dict['SER_10%'] = self.average_model_error(station, cut=10, **kwargs)  
+        summary_dict['SER_25%'] = self.average_model_error(station, cut=25, **kwargs)  
+        summary_dict['SER_50%'] = self.average_model_error(station, cut=50, **kwargs)  
+        summary_dict['SER_75%'] = self.average_model_error(station, cut=75, **kwargs)  
+        summary_dict['MSE'] = self.average_model_error(station, cut=100, **kwargs)
         
 
-        summary_dict['f1_score_individual_1%'] = self.binary_metrics(station=station, cut=1, metric='f1_score', evaluation='individual')        
-        summary_dict['f1_score_individual_2%'] = self.binary_metrics(station=station, cut=2, metric='f1_score', evaluation='individual')  
-        summary_dict['f1_score_individual_5%'] = self.binary_metrics(station=station, cut=5, metric='f1_score', evaluation='individual') 
-        summary_dict['f1_score_individual_10%'] = self.binary_metrics(station=station, cut=10, metric='f1_score', evaluation='individual') 
-        summary_dict['f1_score_individual_25%'] = self.binary_metrics(station=station, cut=25, metric='f1_score', evaluation='individual') 
-        summary_dict['f1_score_individual_50%'] = self.binary_metrics(station=station, cut=50, metric='f1_score', evaluation='individual')  
-        summary_dict['f1_score_individual_75%'] = self.binary_metrics(station=station, cut=75, metric='f1_score', evaluation='individual') 
-        summary_dict['f1_score_individual_all'] = self.binary_metrics(station=station, cut=100, metric='f1_score', evaluation='individual') 
+        # summary_dict['f1_score_individual_1%'] = self.binary_metrics(station=station, cut=1, metric='f1_score', evaluation='individual')        
+        # summary_dict['f1_score_individual_2%'] = self.binary_metrics(station=station, cut=2, metric='f1_score', evaluation='individual')  
+        # summary_dict['f1_score_individual_5%'] = self.binary_metrics(station=station, cut=5, metric='f1_score', evaluation='individual') 
+        # summary_dict['f1_score_individual_10%'] = self.binary_metrics(station=station, cut=10, metric='f1_score', evaluation='individual') 
+        # summary_dict['f1_score_individual_25%'] = self.binary_metrics(station=station, cut=25, metric='f1_score', evaluation='individual') 
+        # summary_dict['f1_score_individual_50%'] = self.binary_metrics(station=station, cut=50, metric='f1_score', evaluation='individual')  
+        # summary_dict['f1_score_individual_75%'] = self.binary_metrics(station=station, cut=75, metric='f1_score', evaluation='individual') 
+        # summary_dict['f1_score_individual_all'] = self.binary_metrics(station=station, cut=100, metric='f1_score', evaluation='individual') 
           
         return summary_dict
             
     def print_model_error(self, station=None, cut=0):
-        if station != None:
+        if station is not None:
             preds = self.predictions(station)
             actuals = self.window.test_windows(station)
             test_array = self.window.test_array(station)
         else:
-            preds = self.predictions(station)
-            actuals = self.window.test_windows  
-            test_array = self.window.test_array
+            preds = self.predictions()
+            actuals = self.window.test_windows()  
+            test_array = self.window.test_array()
             
         cut_percentile = np.percentile(actuals.flatten(), cut)
 
@@ -137,8 +145,8 @@ class Model():
             
     def model_predictions_less_than_cut(self, cut=100):
         
-        preds = self.predictions
-        actuals =self.window.test_windows
+        preds = self.predictions()
+        actuals = self.window.test_windows()
 
         cut_percentile = np.percentile(actuals.flatten(), cut)
 
@@ -147,16 +155,25 @@ class Model():
 
         return num_predicted, num_actual
         
-    def average_model_error(self, station=None, cut=100):
-        if self.window.label_columns[0] == 'streamflow_MLd_inclInfilled':
-            cut = 100 - cut
-            
-        if station != None:
+    def average_model_error(self, station=None, cut=100, **kwargs):
+        # if self.window.label_columns[0] == 'streamflow_MLd_inclInfilled':
+        cut = 100 - cut
+
+        if station is not None:
             preds = self.predictions(station)
             actuals = self.window.test_windows(station)
         else:
             preds = self.predictions()
-            actuals = self.window.test_windows         
+            actuals = self.window.test_windows()
+
+        # min and scale values for the station
+        _min = kwargs.get('_min', None)
+        _scale = kwargs.get('_scale', None)
+
+        if _min is not None and _scale is not None:
+            # print(f"station: {station}, cut: {cut}, _min: {_min}, _scale: {_scale}")
+            preds = (preds - _min)/_scale
+            actuals = (actuals - _min)/_scale
 
         cut_percentile = np.percentile(actuals.flatten(), cut)
 
@@ -166,32 +183,47 @@ class Model():
 
         avg_error = 0
 
+        # print(f"preds shape: {preds.shape}, actuals shape: {actuals.shape}")
+
         for window_pred, window_actual in zip(preds, actuals):
             avg_error += np.sum((window_pred - window_actual)**2)
         
 
-        avg_error = avg_error/actuals.shape[0]*actuals.shape[1]
 
-
-        return avg_error
+        if len(actuals.flatten()) == 0:
+            print(f'station: {station}, cut: {cut}, len: {actuals.shape}')
+            return np.nan
+        else:
+            avg_error = avg_error/(actuals.shape[0]*actuals.shape[1])
+            return avg_error
     
-    def get_NSE(self, station=None, type='cast'):
-        if station != None:
+    def get_NSE(self, station=None, return_type='cast', **kwargs):
+        if station is not None:
             preds = self.predictions(station)
             actuals = self.window.test_windows(station)
         else:
             preds = self.predictions()
             actuals = self.window.test_windows()
         
+        # min and scale values for the station
+        _min = kwargs.get('_min', None)
+        _scale = kwargs.get('_scale', None)
+
+        if _min is not None and _scale is not None:
+            preds = (preds - _min)/_scale
+            actuals = (actuals - _min)/_scale
+        
         NSE = []
 
         for i in range(self.window.label_width):
             numer = np.sum(np.square(preds[:, i] - actuals[:, i]))
             denom = np.sum(np.square(actuals[:, i] - np.mean(actuals[:, i])))
+
+            print(f"station: {station} label: {i+1}, denom: {denom}, numer: {numer}")
         
             NSE.append(1-(numer/denom))
         
-        if type=='cast':
+        if return_type == 'cast':
             return np.mean(NSE)
         else:
             return NSE
@@ -199,27 +231,27 @@ class Model():
     def binary_metrics(self, cut, metric, evaluation='whole', station=None):
         percentile_cut = self.window.station_percentile(station=station, cut=cut)
         
-        if station==None:
+        if station is None:
             preds_pre = self.predictions()
-            actuals_pre = self.window.test_windows
+            actuals_pre = self.window.test_windows()
         else:        
             preds_pre = self.predictions(station)
             actuals_pre = self.window.test_windows(station)
             
-        if evaluation=='whole':  
+        if evaluation == 'whole':
             preds = np.array([int(any(x > percentile_cut)) for x in preds_pre])
             actuals = np.array([int(any(x > percentile_cut)) for x in actuals_pre])
         else:
             preds = np.array([int(x > percentile_cut) for x in preds_pre.flatten()])           
             actuals = np.array([int(x > percentile_cut) for x in actuals_pre.flatten()])
 
-        if metric=='accuracy':
+        if metric == 'accuracy':
             return accuracy_score(actuals, preds)
-        elif metric=='precision':
+        elif metric == 'precision':
             return precision_score(actuals, preds)
-        elif metric=='recall':
+        elif metric == 'recall':
             return recall_score(actuals, preds)
-        elif metric=='f1_score':
+        elif metric == 'f1_score':
             return f1_score(actuals, preds)
      
 
@@ -230,20 +262,21 @@ class Model():
     def predictions(self, station=None):
         tf_test = self.window.test
 
-        if station != None:
+        if station is not None:
             filter_index = self.window.stations.index(station)
             num_inputs = len(self.window.train_df.columns.levels[1])
-            tf_test = tf_test.unbatch().filter(lambda x, y: tf.math.reduce_sum(x[:, num_inputs + filter_index]) > 0).batch(32)
+            tf_test = tf_test.unbatch().filter(lambda x, y: tf.math.reduce_sum(x[:, num_inputs + filter_index]) > 0).batch(256)
 
         return np.squeeze(self.model.predict(tf_test, verbose=0), axis=2)
         
-class Base_Model(Model):  
-    def __init__(self, model_name, window, CONV_WIDTH, output_activation='sigmoid', loss_func=tf.losses.MeanSquaredError()):
+class BaseModel(Model):  
+    def __init__(self, model_name, window, conv_width, output_activation='sigmoid', loss_func=tf.losses.MeanSquaredError(), max_epochs=150):
         super().__init__(window)
         
         self.model_name = model_name
         self.mix_type_name = None
         self.loss_func = loss_func
+        self.MAX_EPOCHS = max_epochs
         
         if self.model_name == 'multi-linear':          
             self.model = tf.keras.Sequential([
@@ -253,23 +286,23 @@ class Base_Model(Model):
                             # Shape => [batch, 1, dense_units]
                             tf.keras.layers.Dense(20, activation='relu'),
                             # Shape => [batch, out_steps*features]
-                            tf.keras.layers.Dense(CONV_WIDTH, activation=output_activation, 
+                            tf.keras.layers.Dense(conv_width, activation=output_activation, 
                                                   kernel_initializer=tf.initializers.zeros()),
                             # Shape => [batch, out_steps, features=1]
-                            tf.keras.layers.Reshape([CONV_WIDTH, 1])
+                            tf.keras.layers.Reshape([conv_width, 1])
                         ])
             
         elif self.model_name == 'multi-CNN':
             self.model = tf.keras.Sequential([
-                            # Shape [batch, time, features] => [batch, CONV_WIDTH, features]
-                            tf.keras.layers.Lambda(lambda x: x[:, -CONV_WIDTH:, :]),
+                            # Shape [batch, time, features] => [batch, conv_width, features]
+                            tf.keras.layers.Lambda(lambda x: x[:, -conv_width:, :]),
                             # Shape => [batch, 1, conv_units]
-                            tf.keras.layers.Conv1D(64, activation='relu', kernel_size=(CONV_WIDTH)),
+                            tf.keras.layers.Conv1D(64, activation='relu', kernel_size=(conv_width)),
                             # Shape => [batch, 1,  out_steps*features]
-                            tf.keras.layers.Dense(CONV_WIDTH, activation=output_activation, 
+                            tf.keras.layers.Dense(conv_width, activation=output_activation, 
                                                   kernel_initializer=tf.initializers.zeros()),
                             # Shape => [batch, out_steps, features=1]
-                            tf.keras.layers.Reshape([CONV_WIDTH, 1])
+                            tf.keras.layers.Reshape([conv_width, 1])
                         ])
             
         elif self.model_name == 'multi-LSTM':                       
@@ -278,10 +311,10 @@ class Base_Model(Model):
                             # Adding more `lstm_units` just overfits more quickly.
                             LSTM(32, return_sequences=False),
                             # Shape => [batch, out_steps*features].
-                            Dense(CONV_WIDTH, activation=output_activation,
+                            Dense(conv_width, activation=output_activation,
                                                   kernel_initializer=tf.initializers.zeros()),
                             # Shape => [batch, out_steps, features=1].
-                            Reshape([CONV_WIDTH, 1])
+                            Reshape([conv_width, 1])
                         ])
 
             
@@ -297,10 +330,10 @@ class Base_Model(Model):
                             LSTM(20, return_sequences=False), 
                             
                             Dropout(0.2),                
-                            Dense(CONV_WIDTH, activation=output_activation,
+                            Dense(conv_width, activation=output_activation,
                                                   kernel_initializer=tf.initializers.zeros()),
                             # Shape => [batch, out_steps, features=1].
-                            Reshape([CONV_WIDTH, 1])
+                            Reshape([conv_width, 1])
                         ])    
             
         elif self.model_name == 'multi-Bidirectional-LSTM':                       
@@ -309,10 +342,10 @@ class Base_Model(Model):
                             # Adding more `lstm_units` just overfits more quickly.
                             Bidirectional(LSTM(20, return_sequences=False)),
                             # Shape => [batch, out_steps*features].
-                            Dense(CONV_WIDTH, activation=output_activation,
+                            Dense(conv_width, activation=output_activation,
                                                   kernel_initializer=tf.initializers.zeros()),
                             # Shape => [batch, out_steps, features=1].
-                            Reshape([CONV_WIDTH, 1])
+                            Reshape([conv_width, 1])
                         ])  
             
         elif self.model_name == 'multi-deep-Bidirectional-LSTM':                       
@@ -325,24 +358,26 @@ class Base_Model(Model):
                             Bidirectional(LSTM(32, return_sequences=False)),
                             Dropout(0.2),
                             # Shape => [batch, out_steps*features].
-                            Dense(CONV_WIDTH, activation=output_activation,
+                            Dense(conv_width, activation=output_activation,
                                                   kernel_initializer=tf.initializers.zeros()),
                             # Shape => [batch, out_steps, features=1].
-                            Reshape([CONV_WIDTH, 1])
+                            Reshape([conv_width, 1])
                         ]) 
             
         self.compile_and_fit(self.model, window, loss_func)
 
 
 
-class Mixed_Model(Base_Model):
+class Mixed_Model(BaseModel):
     threshold = 0.2
     
-    def __init__(self, model_name, mix_type_name, window, CONV_WIDTH):
-        super().__init__(model_name, window, CONV_WIDTH)
+    def __init__(self, model_name, mix_type_name, window, conv_width):
+        super().__init__(model_name, window, conv_width)
         self.mix_type_name = mix_type_name
                
         if self.mix_type_name == 'simple-two_model-onestepAR':
+            train_df = self.window.train_df
+            test_df = self.window.test_df
             window_simple = WindowGenerator(input_width=1,
                                              label_width=1,
                                              shift=1,
@@ -351,9 +386,11 @@ class Mixed_Model(Base_Model):
                                              station=self.window.station,
                                              label_columns=['flood_probabilities'])
             
-            self.model_simple = Base_Model(model_name=model_name, window=window_simple, CONV_WIDTH=1)
+            self.model_simple = BaseModel(model_name=model_name, window=window_simple, conv_width=1)
             
         elif self.mix_type_name == 'simple-two_model-multistep':
+            train_df = self.window.train_df
+            test_df = self.window.test_df
             window_simple = WindowGenerator(input_width=1,
                                              label_width=self.window.label_width,
                                              shift=self.window.label_width,
@@ -362,8 +399,10 @@ class Mixed_Model(Base_Model):
                                              station=self.window.station,
                                              label_columns=['flood_probabilities'])
             
-            self.model_simple = Base_Model(model_name=model_name, window=window_simple, CONV_WIDTH=self.window.label_width)
+            self.model_simple = BaseModel(model_name=model_name, window=window_simple, conv_width=self.window.label_width)
         elif self.mix_type_name == 'upper_soil-two_model-multistep':
+            train_df = self.window.train_df
+            test_df = self.window.test_df
             window_simple = WindowGenerator(input_width=self.window.input_width,
                                              label_width=self.window.label_width,
                                              shift=self.window.label_width,
@@ -373,7 +412,7 @@ class Mixed_Model(Base_Model):
                                             filtered='upper_soil_filter',
                                              label_columns=['flood_probabilities'])
             
-            self.model_simple = Base_Model(model_name=model_name, window=window_simple, CONV_WIDTH=self.window.label_width)
+            self.model_simple = BaseModel(model_name=model_name, window=window_simple, conv_width=self.window.label_width)
             
             
     @property
@@ -503,7 +542,6 @@ class Ensemble_Static():
         combined_dense_two = Dense(32, activation='relu',name="DENSE_LAYER_2")(combined)
         output = Dense(num_predictions, activation='sigmoid', name="OUTPUT_LAYER")(combined_dense_two)
 
-      
         # Compile ModeL
         self.model = keras.models.Model(inputs=[recurrent_input, static_input], outputs=[output])
         # MSE
@@ -521,9 +559,6 @@ class Ensemble_Static():
         self.train()
         
     def train(self):
-
-        opt = keras.optimizers.Adam(learning_rate=1e-4, beta_1=0.87, beta_2=0.990, amsgrad=False)
-
         if self.loss_func is not None:
             self.model.compile(loss=self.loss_func, optimizer='adam', metrics=['MeanAbsoluteError'])
         else:
@@ -540,7 +575,7 @@ class Ensemble_Static():
 
     @property
     def test_loss(self):
-        return self.model.evaluate(self.window.test, verbose=0)[0]
+        return self.model.evaluate([self.test_timeseries_x, self.test_static_x], self.test_y, verbose=0)[0]
     
     def predictions(self, station):  
         filter_index = self.stations.index(station)
@@ -583,7 +618,7 @@ class Ensemble_Static():
         
         if avg_error==0:
             return 0
-        avg_error = avg_error/actuals.shape[0]*actuals.shape[1]
+        avg_error = avg_error/(actuals.shape[0]*actuals.shape[1])
 
         return avg_error 
     
@@ -622,7 +657,7 @@ class Ensemble_Static():
         summary_dict['SER_25%'] = self.average_model_error(station, cut=25)  
         summary_dict['SER_50%'] = self.average_model_error(station, cut=50)  
         summary_dict['SER_75%'] = self.average_model_error(station, cut=75)  
-        summary_dict['RMSE'] = self.average_model_error(station, cut=100)
+        summary_dict['MSE'] = self.average_model_error(station, cut=100)
         
         return summary_dict
 
@@ -633,7 +668,7 @@ class Ensemble_Static():
 class Switch_Model(Model):
     threshold = 0.7
     
-    def __init__(self, window_switch, window_regular, CONV_WIDTH):
+    def __init__(self, window_switch, window_regular, conv_width):
         self.window_switch = window_switch
         self.window = window_regular
         
@@ -641,9 +676,9 @@ class Switch_Model(Model):
         
         self.switch = Ensemble_Static(window_switch)
         
-        self.regular = Base_Model(model_name='multi-LSTM', window=window_regular, CONV_WIDTH=CONV_WIDTH)
-        self.q70 = Base_Model(model_name='multi-LSTM', window=window_regular, CONV_WIDTH=CONV_WIDTH, loss_func=CustomLoss.qloss_70)
-        self.q95 = Base_Model(model_name='multi-LSTM', window=window_regular, CONV_WIDTH=CONV_WIDTH, loss_func=CustomLoss.qloss_95)
+        self.regular = BaseModel(model_name='multi-LSTM', window=window_regular, conv_width=conv_width)
+        self.q70 = BaseModel(model_name='multi-LSTM', window=window_regular, conv_width=conv_width, loss_func=QuantileLoss.qloss_70)
+        self.q95 = BaseModel(model_name='multi-LSTM', window=window_regular, conv_width=conv_width, loss_func=QuantileLoss.qloss_95)
         
     def predictions(self, station):
         preds_switch = self.switch.predictions(station)
@@ -747,7 +782,7 @@ class Switch_Model(Model):
 
     
 
-    def summary(self, station=None):
+    def summary(self, station=None, **kwargs):
         summary_dict = {}
         
         summary_dict['input_width'] = self.window.input_width
@@ -756,7 +791,7 @@ class Switch_Model(Model):
         if station is not None:
             summary_dict['station'] = station
 
-        summary_dict['NSE'] = self.get_NSE(station)
+        summary_dict['NSE'] = self.get_NSE(station, **kwargs)
                   
         # summary_dict['SER_1%'] = self.average_model_error(station, cut=1)
         # summary_dict['SER_2%'] = self.average_model_error(station, cut=2)
@@ -767,29 +802,34 @@ class Switch_Model(Model):
         # summary_dict['SER_75%'] = self.average_model_error(station, cut=75)
         # summary_dict['RMSE'] = self.average_model_error(station, cut=100)
 
-        summary_dict['RMSE_high'] = self.average_model_error_between_quantiles(station, q_start=70, q_end=95)
-        summary_dict['RMSE_extreme'] = self.average_model_error_between_quantiles(station, q_start=95)
-        summary_dict['RMSE_normal'] = self.average_model_error_between_quantiles(station, q_end=70)
-        summary_dict['RMSE_all'] = self.average_model_error_between_quantiles(station, q_end=100)
+        summary_dict['MSE_high'] = self.average_model_error_between_quantiles(station, q_start=70, q_end=95)
+        summary_dict['MSE_extreme'] = self.average_model_error_between_quantiles(station, q_start=95)
+        summary_dict['MSE_normal'] = self.average_model_error_between_quantiles(station, q_end=70)
+        summary_dict['MSE_all'] = self.average_model_error_between_quantiles(station, q_end=100)
 
         return summary_dict
-
-
-
-
-
-
 
 
 class QuantileEnsemble(Model):
     
     threshold = 0.7
     
-    def __init__(self, window, CONV_WIDTH):
+    def __init__(self, window, conv_width, max_epochs=250):
         self.window = window
-        self.regular = Base_Model(model_name='multi-LSTM', window=window, CONV_WIDTH=CONV_WIDTH)
-        self.q05 = Base_Model(model_name='multi-LSTM', window=window, CONV_WIDTH=CONV_WIDTH, loss_func=CustomLoss.qloss_05)
-        self.q95 = Base_Model(model_name='multi-LSTM', window=window, CONV_WIDTH=CONV_WIDTH, loss_func=CustomLoss.qloss_95)
+        self.regular = BaseModel(model_name='multi-LSTM',
+                                  window=window,
+                                  conv_width=conv_width,
+                                  max_epochs=max_epochs)
+        self.q05 = BaseModel(model_name='multi-LSTM',
+                             window=window,
+                             conv_width=conv_width,
+                             loss_func=QuantileLoss.qloss_05,
+                             max_epochs=max_epochs)
+        self.q95 = BaseModel(model_name='multi-LSTM',
+                             window=window,
+                             conv_width=conv_width,
+                             loss_func=QuantileLoss.qloss_95,
+                             max_epochs=max_epochs)
         
     def predictions(self, station):
         preds_regular = self.regular.predictions(station)
@@ -801,11 +841,47 @@ class QuantileEnsemble(Model):
         preds = self.predictions(data='test', station=station)
         test_array = self.window.test_array(station)[self.window.input_width:]
         return mean_squared_error(test_array, preds)
+    
+    def interval_score(self, target, pred_low, pred_high, alpha=0.1):
+        # Calculate the interval score
+        L = pred_low
+        U = pred_high
+        IS = (U - L) + (2/alpha) * np.maximum(0, L - target) + (2/alpha) * np.maximum(0, target - U)
+        return IS
 
-    def summary(self, station=None):
+    def summary(self, station=None, **kwargs):
 
-        summary_regular = self.regular.summary(station)
-        summary_q05 = self.q05.summary(station)
-        summary_q95 = self.q95.summary(station)
+        summary_regular = self.regular.summary(station, **kwargs)
+        summary_q05 = self.q05.summary(station, **kwargs)
+        summary_q95 = self.q95.summary(station, **kwargs)
+
+        if kwargs.get('conf_score', False):
+            predictions = self.predictions(station)
+            actuals = self.window.test_windows(station)
+
+            # min and scale values for the station
+            _min = kwargs.get('_min', None)
+            _scale = kwargs.get('_scale', None)
+
+            preds_q05 = predictions[...,1]
+            preds_q95 = predictions[...,2]
+
+            if _min is not None and _scale is not None:
+                preds_q05 = (preds_q05 - _min)/_scale
+                preds_q95 = (preds_q95 - _min)/_scale
+                actuals = (actuals - _min)/_scale
+
+            conf = []
+            for i in range(self.window.label_width):
+                # window_flag = (actuals[:, i] > preds_q05[:, i]) & (actuals[:, i] < preds_q95[:, i])
+                # conf.append(np.abs(window_flag.sum()/window_flag.shape[0] - 0.90))
+                conf.append(self.interval_score(target=actuals[:, i],
+                                                pred_low=preds_q05[:, i], 
+                                                pred_high=preds_q95[:, i], 
+                                                alpha=0.1))
+            
+            conf = np.mean(conf)
+
+            return [summary_regular, summary_q05, summary_q95, conf]
         
         return [summary_regular, summary_q05, summary_q95]

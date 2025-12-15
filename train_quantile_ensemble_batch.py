@@ -78,7 +78,7 @@ for n in tqdm.trange(args.num_runs):
     results_q05 = []
     results_q95 = []
     
-    quantile_ensemble = QuantileEnsemble(window=multi_window, CONV_WIDTH=args.output_width)
+    quantile_ensemble = QuantileEnsemble(window=multi_window, conv_width=args.output_width)
     
     for station in selected_stations:
         print(f'Evaluating Quantile Ensembles for station {station}.')
@@ -87,9 +87,10 @@ for n in tqdm.trange(args.num_runs):
         results_q05.append(summary_q05)
         results_q95.append(summary_q95)
 
-    results_reg = pd.DataFrame(results_regular)[summary_cols].mean().to_dict()
-    results_q05 = pd.DataFrame(results_q05)[summary_cols].mean().to_dict()
-    results_q95 = pd.DataFrame(results_q95)[summary_cols].mean().to_dict()
+    # Calculate mean metrics, handling NaN values appropriately
+    results_reg = pd.DataFrame(results_regular)[summary_cols].mean(skipna=True).to_dict()
+    results_q05 = pd.DataFrame(results_q05)[summary_cols].mean(skipna=True).to_dict()
+    results_q95 = pd.DataFrame(results_q95)[summary_cols].mean(skipna=True).to_dict()
 
     summary_data_reg.append(results_reg)
     summary_data_q05.append(results_q05)

@@ -66,7 +66,7 @@ np_window = MultiNumpyWindow(input_width=args.input_width,
                              stations=selected_stations,
                              label_columns=['flood_prob_acc'])
 
-model_switch = Switch_Model(window_switch=np_window, window_regular=multi_window, CONV_WIDTH=args.output_width) 
+model_switch = Switch_Model(window_switch=np_window, window_regular=multi_window, conv_width=args.output_width) 
 
 for station in selected_stations:
     results_switch.append(model_switch.summary(station))
