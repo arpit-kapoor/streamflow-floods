@@ -35,6 +35,13 @@ from src.visualization import plot_flood_risk_analysis
 
 
 # ==============================================================================
+# CONSTANTS
+# ==============================================================================
+
+LABEL_COLUMN = 'streamflow_MLd_inclInfilled'
+
+
+# ==============================================================================
 # HELPER FUNCTIONS
 # ==============================================================================
 
@@ -139,7 +146,7 @@ def train_station_model(station, camels_data, variable_ts, args):
         train_df=train_df_single,
         test_df=test_df_single,
         stations=[station],
-        label_columns=['streamflow_MLd_inclInfilled'],
+        label_columns=[LABEL_COLUMN],
         batch_size=32
     )
     
@@ -190,8 +197,7 @@ def evaluate_station_model(station, quantile_model, test_min, test_scale):
 
 
 def process_flood_risk_for_station(station, station_name, quantile_model, multi_window,
-                                   train_df, camels_data, variable_ts, test_min, 
-                                   test_scale, threshold, args, output_dir):
+                                   test_min, test_scale, threshold, args, output_dir):
     """
     Calculate flood risk indicators and generate visualizations for a station.
     
@@ -205,12 +211,6 @@ def process_flood_risk_for_station(station, station_name, quantile_model, multi_
         Trained quantile ensemble model
     multi_window : MultiWindow
         Window object containing test data
-    train_df : pd.DataFrame
-        Training data for all stations
-    camels_data : PrepareData
-        Data preparation object
-    variable_ts : list
-        List of timeseries variable names
     test_min : float
         Minimum value for inverse scaling
     test_scale : float
@@ -229,9 +229,22 @@ def process_flood_risk_for_station(station, station_name, quantile_model, multi_
     predictions = (quantile_model.predictions(station) - test_min) / test_scale
     actual_values = (multi_window.test_windows(station) - test_min) / test_scale
     
+    # Debug: Print shapes and sample values
+    print(f'\n[DEBUG] Shapes before max:')
+    print(f'  predictions.shape: {predictions.shape}')
+    print(f'  actual_values.shape: {actual_values.shape}')
+    print(f'  test_min: {test_min:.4f}, test_scale: {test_scale:.4f}')
+    
     # Use maximum values across forecast horizon for flood detection
     pred_max = predictions.max(axis=1)
     actual_max = actual_values.max(axis=1)
+    
+    # Debug: Print shapes after max
+    print(f'\n[DEBUG] Shapes after max:')
+    print(f'  pred_max.shape: {pred_max.shape}')
+    print(f'  actual_max.shape: {actual_max.shape}')
+    print(f'  pred_max sample (first 3): {pred_max[:3] if len(pred_max.shape) == 1 else pred_max[:3, :]}')
+    print(f'  actual_max sample (first 3): {actual_max[:3]}')
     
     # Calculate and display MSE for each quantile
     print(f'\nPrediction Quality:')
@@ -275,7 +288,8 @@ def process_flood_risk_for_station(station, station_name, quantile_model, multi_
     plot_path = f'{station_output_dir}/flood_risk_analysis.png'
     plot_flood_risk_analysis(
         station, station_name, date_values, actual_max,
-        pred_max, alert, threshold, plot_path
+        pred_max, alert, threshold, plot_path,
+        label_column=LABEL_COLUMN
     )
     print(f'✓ Plot saved to: {plot_path}')
 
@@ -349,10 +363,12 @@ parser = argparse.ArgumentParser(
 
 # Data configuration
 parser.add_argument('--data-dir', type=str, 
-                    default='/srv/scratch/z5370003/data/camels-dropbox/',
+                    default='/srv/scratch/z5370003/projects/data/camels/dropbox',
                     help='Path to the data directory')
 parser.add_argument('--state', type=str, default='SA',
-                    help='State to train the model on')
+                    help='State to train the model on (ignored if --station-ids is provided)')
+parser.add_argument('--station-ids', type=str, nargs='+', default=None,
+                    help='List of station IDs to process (e.g., 108003A 108004A). If provided, --state is ignored.')
 parser.add_argument('--n-stations', type=int, default=10,
                     help='Number of stations to process')
 
@@ -387,19 +403,45 @@ def main():
     
     # Load CAMELS data
     print(f'\nLoading CAMELS data from: {args.data_dir}')
-    camels_data = read_data_from_file(args.data_dir)
+    timeseries_data, summary_data = read_data_from_file(args.data_dir)
+    camels_data = PrepareData(timeseries_data, summary_data)
     print('✓ Data loaded successfully')
     
-    # Select stations for the specified state
-    selected_stations, station_names, characteristics = select_stations(
-        camels_data, 
-        args.state
-    )
-    print(f'✓ Selected {len(selected_stations)} stations in {args.state}')
+    # Select stations: use provided station IDs or select by state
+    if args.station_ids:
+        print(f'\nUsing manually specified station IDs: {args.station_ids}')
+        selected_stations = args.station_ids
+        
+        # Remove duplicate stations from metadata
+        camels_data.summary_data = camels_data.summary_data.T.drop_duplicates().T
+        
+        # Get station names for the specified IDs
+        station_names = camels_data.summary_data.loc[selected_stations, 'station_name']
+        characteristics = camels_data.summary_data[[
+            'state_outlet', 'station_name', 'river_region',
+            'Q5', 'Q95', 'catchment_area',
+            'lat_outlet', 'long_outlet', 'runoff_ratio'
+        ]]
+        
+        # Validate that all station IDs exist
+        missing_stations = [s for s in selected_stations if s not in camels_data.summary_data.index]
+        if missing_stations:
+            print(f'Warning: The following station IDs were not found in the dataset: {missing_stations}')
+            selected_stations = [s for s in selected_stations if s in camels_data.summary_data.index]
+            station_names = station_names[station_names.index.isin(selected_stations)]
+        
+        print(f'✓ Using {len(selected_stations)} manually specified stations')
+    else:
+        print(f'\nSelecting stations from state: {args.state}')
+        selected_stations, station_names, characteristics = select_stations(
+            camels_data, 
+            args.state
+        )
+        print(f'✓ Selected {len(selected_stations)} stations in {args.state}')
     
     # Define time series variables
     variable_ts = [
-        'streamflow_MLd_inclInfilled',
+        LABEL_COLUMN,
         'precipitation_deficit',
         'year_sin', 'year_cos',
         'tmax_AWAP',
@@ -418,7 +460,10 @@ def main():
     flood_thresholds = {}
     
     # Create output directory
-    output_dir = f'results/Stage_FloodRisk/{args.state}-{args.output_width}'
+    if args.station_ids:
+        output_dir = f'results/Stage_FloodRisk/manual-{args.output_width}'
+    else:
+        output_dir = f'results/Stage_FloodRisk/{args.state}-{args.output_width}'
     os.makedirs(output_dir, exist_ok=True)
     
     # Load all training data once for threshold calculation
@@ -478,15 +523,14 @@ def main():
             # Process flood risk (only on first run)
             if n == 0:
                 threshold_prob, threshold, threshold_year = calc_flood_threshold(
-                    station, train_df, camels_data, variable_ts,
+                    station, train_df, test_min, test_scale,
                     top=args.flood_threshold_percentile
                 )
                 flood_thresholds[station] = threshold
                 
                 process_flood_risk_for_station(
                     station, station_display_name, quantile_model, multi_window,
-                    train_df, camels_data, variable_ts, test_min, test_scale,
-                    threshold, args, output_dir
+                    test_min, test_scale, threshold, args, output_dir
                 )
         
         # Aggregate results for this run, handling NaN values appropriately

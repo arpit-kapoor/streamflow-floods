@@ -18,7 +18,7 @@ from src.model import Switch_Model, QuantileEnsemble
 
 # Argument Parser
 parser = argparse.ArgumentParser(description='Train Stage 5')
-parser.add_argument('--data-dir', type=str, default='/srv/scratch/z5370003/data/camels-dropbox/', help='Path to the data directory')
+parser.add_argument('--data-dir', type=str, default='/srv/scratch/z5370003/projects/data/camels/dropbox', help='Path to the data directory')
 parser.add_argument('--num-runs', type=int, default=1, help='Number of runs')
 parser.add_argument('--state', type=str, default='SA', help='State to train the model on')
 parser.add_argument('--input-width', type=int, default=5, help='Input width for the window')

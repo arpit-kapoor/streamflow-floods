@@ -11,7 +11,7 @@ from src.model import Base_Model
 
 # Argument Parser
 parser = argparse.ArgumentParser(description='Train Stage 2')
-parser.add_argument('--data-dir', type=str, default='/srv/scratch/z5370003/data/camels-dropbox/', help='Path to the data directory')
+parser.add_argument('--data-dir', type=str, default='/srv/scratch/z5370003/projects/data/camels/dropbox', help='Path to the data directory')
 parser.add_argument('--num-runs', type=int, default=3, help='Number of runs')
 
 args = parser.parse_args()

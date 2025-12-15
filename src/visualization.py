@@ -11,7 +11,7 @@ import numpy as np
 
 
 def plot_flood_risk_analysis(station, station_name, date_values, actual_max, 
-                             pred_max, alert, threshold, output_path):
+                             pred_max, alert, threshold, output_path, label_column='streamflow_MLd_inclInfilled'):
     """
     Create comprehensive flood risk analysis visualization with three panels:
     1. Actual streamflow with flood threshold
@@ -34,10 +34,19 @@ def plot_flood_risk_analysis(station, station_name, date_values, actual_max,
     alert : np.ndarray
         Alert level classifications (-1=Unlikely, 0=Low, 1=Moderate, 2=High)
     threshold : float
-        Flood threshold value (mm/day)
+        Flood threshold value
     output_path : str
         Path to save the plot
+    label_column : str, optional
+        Name of the target column to extract units from (default: 'streamflow_MLd_inclInfilled')
     """
+    # Extract unit from column name
+    if '_MLd_' in label_column:
+        unit = 'ML/day'
+    elif '_mmd_' in label_column or 'mm' in label_column.lower():
+        unit = 'mm/day'
+    else:
+        unit = 'units'  # fallback
     fig, ax = plt.subplots(3, 1, figsize=(20, 12), sharex=True)
     plt.rcParams.update({'font.size': 15})
     
@@ -52,7 +61,7 @@ def plot_flood_risk_analysis(station, station_name, date_values, actual_max,
         color='orange',
         linewidth=2
     )
-    ax[0].set_ylabel('Streamflow (mm/day)', fontsize=18)
+    ax[0].set_ylabel(f'Streamflow ({unit})', fontsize=18)
     ax[0].set_ylim(0, max(actual_max.max(), threshold) * 1.1)
     ax[0].legend(loc='upper right')
     ax[0].grid(True, alpha=0.3)
@@ -83,7 +92,7 @@ def plot_flood_risk_analysis(station, station_name, date_values, actual_max,
         color='orange',
         linewidth=2
     )
-    ax[1].set_ylabel('Streamflow (mm/day)', fontsize=18)
+    ax[1].set_ylabel(f'Streamflow ({unit})', fontsize=18)
     ax[1].set_ylim(0, max(actual_max.max(), threshold) * 1.1)
     ax[1].legend(loc='upper right')
     ax[1].grid(True, alpha=0.3)

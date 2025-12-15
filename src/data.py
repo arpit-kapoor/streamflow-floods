@@ -17,9 +17,17 @@ def read_data_from_file(data_dir):
     timeseries_dfs = []
     summary_dfs = []
     
+    # Validate data directory exists
+    if not os.path.exists(data_dir):
+        raise FileNotFoundError(
+            f"Data directory not found: {data_dir}\n"
+            f"Please check the --data-dir argument or set the correct path."
+        )
+    
     # Read all csv files from directory
     # Sort files into timeseries and summary data
-    for file_path in glob.glob(data_dir + '**/*.csv', recursive=True):
+    csv_pattern = os.path.join(data_dir, '**', '*.csv')
+    for file_path in glob.glob(csv_pattern, recursive=True):
         # Skip checkpoint files and other problematic files
         if '.ipynb_checkpoints' in file_path or 'checkpoint' in file_path.lower():
             continue
@@ -46,6 +54,20 @@ def read_data_from_file(data_dir):
             df = df.rename({'ID':'station_id'}, axis=1)
             df = df.set_index('station_id')
             summary_dfs.append(df)
+    
+    # Check if any data was loaded
+    if len(timeseries_dfs) == 0:
+        raise ValueError(
+            f"No timeseries data found in {data_dir}\n"
+            f"Expected CSV files with 'year' column. "
+            f"Please verify the data directory contains CAMELS-AUS data."
+        )
+    
+    if len(summary_dfs) == 0:
+        raise ValueError(
+            f"No summary data found in {data_dir}\n"
+            f"Expected CSV files with station metadata."
+        )
     
     timeseries_data = pd.concat(timeseries_dfs, axis=0, ignore_index=True)
     timeseries_data['date'] = pd.to_datetime(timeseries_data[['year', 'month', 'day']])
