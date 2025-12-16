@@ -1,0 +1,26 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug: Train Quantile Ensemble with Flood Risk",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/train_quantile_ensemble_with_floodrisk.py",
+            "console": "integratedTerminal",
+            "python": "${command:python.interpreterPath}",
+            "args": [
+                "--num-runs", "1",
+                "--output-width", "3",
+                "--input-width", "10",
+                "--shift", "1",
+                "--station-ids", "113004A",
+                "--flood-threshold-percentile", "0.80",
+                // "--n-stations", "2",
+                "--data-dir", "/Users/arpitkapoor/Library/CloudStorage/OneDrive-UNSW/Shared/Data/Streamflow/camels/dropbox"
+            ]
+        }
+    ]
+}

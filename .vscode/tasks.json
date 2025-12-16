@@ -1,0 +1,172 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Train: Quantile Ensemble with Flood Risk (QLD-2)",
+            "type": "shell",
+            "command": "conda",
+            "args": [
+                "run",
+                "-n",
+                "tf-env",
+                "python",
+                "${workspaceFolder}/train_quantile_ensemble_with_floodrisk.py",
+                "--num-runs",
+                "1",
+                "--output-width",
+                "3",
+                "--input-width",
+                "10",
+                "--shift",
+                "1",
+                "--state",
+                "QLD",
+                "--flood-threshold-percentile",
+                "0.90",
+                "--n-stations",
+                "2",
+                "--data-dir",
+                "/Users/arpitkapoor/Library/CloudStorage/OneDrive-UNSW/Shared/Data/Streamflow/camels/dropbox"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true,
+                "showReuseMessage": false
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "Train: Quantile Ensemble Individual",
+            "type": "shell",
+            "command": "conda",
+            "args": [
+                "run",
+                "-n",
+                "tf-env",
+                "python",
+                "${workspaceFolder}/train_quantile_ensemble_individual.py",
+                "--data-dir",
+                "/Users/arpitkapoor/Library/CloudStorage/OneDrive-UNSW/Shared/Data/Streamflow/camels/dropbox",
+                "--num-runs",
+                "1",
+                "--state",
+                "SA",
+                "--input-width",
+                "5",
+                "--output-width",
+                "5",
+                "--shift",
+                "5"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "group": "build"
+        },
+        {
+            "label": "Train: Quantile Ensemble Batch",
+            "type": "shell",
+            "command": "conda",
+            "args": [
+                "run",
+                "-n",
+                "tf-env",
+                "python",
+                "${workspaceFolder}/train_quantile_ensemble_batch.py",
+                "--data-dir",
+                "/Users/arpitkapoor/Library/CloudStorage/OneDrive-UNSW/Shared/Data/Streamflow/camels/dropbox",
+                "--num-runs",
+                "1",
+                "--state",
+                "SA",
+                "--input-width",
+                "5",
+                "--output-width",
+                "5",
+                "--shift",
+                "5"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "group": "build"
+        },
+        {
+            "label": "Evaluate: Architecture",
+            "type": "shell",
+            "command": "conda",
+            "args": [
+                "run",
+                "-n",
+                "tf-env",
+                "python",
+                "${workspaceFolder}/evaluate_architecture.py",
+                "--data-dir",
+                "/Users/arpitkapoor/Library/CloudStorage/OneDrive-UNSW/Shared/Data/Streamflow/camels/dropbox",
+                "--num-runs",
+                "3"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "group": "test"
+        },
+        {
+            "label": "Evaluate: Strategy",
+            "type": "shell",
+            "command": "conda",
+            "args": [
+                "run",
+                "-n",
+                "tf-env",
+                "python",
+                "${workspaceFolder}/evaluate_strategy.py",
+                "--data-dir",
+                "/Users/arpitkapoor/Library/CloudStorage/OneDrive-UNSW/Shared/Data/Streamflow/camels/dropbox",
+                "--num-runs",
+                "3"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "group": "test"
+        },
+        {
+            "label": "Test: Data Module Import",
+            "type": "shell",
+            "command": "conda",
+            "args": [
+                "run",
+                "-n",
+                "tf-env",
+                "python",
+                "-c",
+                "from src.data import PrepareData, read_data_from_file; print('✓ Import successful')"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "group": "test"
+        }
+    ]
+}

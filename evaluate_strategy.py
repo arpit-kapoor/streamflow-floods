@@ -1,45 +1,89 @@
+#!/usr/bin/env python
+# coding: utf-8
+"""Evaluate different training strategies for streamflow prediction models.
+
+This script compares three training approaches:
+1. Individual LSTM - Train separate models for each station
+2. Batch-Temporal LSTM - Train on multiple stations with temporal batching
+3. Batch-Static LSTM - Train on multiple stations with static catchment attributes
+"""
+
 import itertools
 import argparse
 import pandas as pd
-
 from datetime import datetime
 
-from src.data import PrepareData
-from src.data import plot_catchments, read_data_from_file
+from src.data import PrepareData, plot_catchments, read_data_from_file
 from src.window import WindowGenerator, MultiNumpyWindow, MultiWindow
 from src.model import Base_Model
 
-# Argument Parser
-parser = argparse.ArgumentParser(description='Train Stage 1')
-parser.add_argument('--data-dir', type=str, default='/srv/scratch/z5370003/projects/data/camels/dropbox', help='Path to the data directory')
-parser.add_argument('--num-runs', type=int, default=3, help='Number of runs')
+# ==============================================================================
+# COMMAND LINE ARGUMENTS
+# ==============================================================================
+
+parser = argparse.ArgumentParser(
+    description='Evaluate training strategies for streamflow prediction'
+)
+parser.add_argument(
+    '--data-dir',
+    type=str,
+    default='/srv/scratch/z5370003/projects/data/camels/dropbox',
+    help='Path to the CAMELS data directory'
+)
+parser.add_argument(
+    '--num-runs',
+    type=int,
+    default=3,
+    help='Number of training runs for averaging results'
+)
 
 args = parser.parse_args()
 
 data_dir = args.data_dir
 num_runs = args.num_runs
 
-# Read timeseries and summary data from data dir
+# ==============================================================================
+# DATA LOADING
+# ==============================================================================
+
+print(f'Loading data from: {data_dir}')
 timeseries_data, summary_data = read_data_from_file(data_dir)
 
-# Create Dataset
+# Initialize data preparation with feature engineering
 camels_data = PrepareData(timeseries_data, summary_data)
 
-# Plot catchments on map
+# Visualize catchment locations (optional)
 plot_catchments(camels_data, data_dir)
 
+# ==============================================================================
+# STATION SELECTION
+# ==============================================================================
 
+# Remove duplicate station metadata
 camels_data.summary_data = camels_data.summary_data.T.drop_duplicates().T
-selected_stations = list(camels_data.summary_data[camels_data.summary_data['state_outlet'] == 'SA'].index)
 
-# Enter the model you wish to run or multiple as per requirements. The models can be accessed through the following names:
-#['multi-LSTM', 'multi-linear','multi-CNN', 'multi-Bidirectional-LSTM']
+# Select all stations in South Australia
+selected_stations = list(
+    camels_data.summary_data[camels_data.summary_data['state_outlet'] == 'SA'].index
+)
+print(f'Selected {len(selected_stations)} stations in SA')
 
+# ==============================================================================
+# STRATEGY EVALUATION
+# ==============================================================================
 
-# Individual LSTM-SA
-combined= []
-for i in range(0, num_runs):
-    print('RUN', i)
+# Available models: 'multi-LSTM', 'multi-linear', 'multi-CNN', 'multi-Bidirectional-LSTM'
+
+# ==============================================================================
+# STRATEGY 1: INDIVIDUAL LSTM (One model per station)
+# ==============================================================================
+print('\n' + '='*80)
+print('STRATEGY 1: INDIVIDUAL LSTM')
+print('='*80)
+
+combined = []
+for i in range(num_runs):
+    print(f'\nRun {i+1}/{num_runs}')
     input_widths = [5]
     label_widths = [5]
     models = ['multi-LSTM']
@@ -77,22 +121,30 @@ for i in range(0, num_runs):
 
             pd.DataFrame(results_baseModels_variables).to_csv('results_files/results_ensemble_all_1.csv')
 
-        except:
-            errors_baseModels_variables.append([input_width, label_width, station, model])
+        except Exception as e:
+            print(f'Error training {model_name} for {station}: {e}')
+            errors_baseModels_variables.append([input_width, label_width, station, model_name])
         
-        
+        # Note: break here limits evaluation to first station only (for testing)
         break
 
     Individual_SA = pd.DataFrame(results_baseModels_variables)
-    # Individual_SA= Individual_SA.mean()
-    # Individual_SA= Individual_SA.to_dict()
+    # Results aggregation commented out for individual analysis
+    # Individual_SA = Individual_SA.mean()
+    # Individual_SA = Individual_SA.to_dict()
     # combined.append(Individual_SA)
 
 
-# Batch-Temporal LSTM-SA
-combined= []
-for i in range(0, num_runs):
-    print('RUN',i)
+# ==============================================================================
+# STRATEGY 2: BATCH-TEMPORAL LSTM (Multiple stations, temporal features only)
+# ==============================================================================
+print('\n' + '='*80)
+print('STRATEGY 2: BATCH-TEMPORAL LSTM')
+print('='*80)
+
+combined = []
+for i in range(num_runs):
+    print(f'\nRun {i+1}/{num_runs}')
     input_widths = [5]
     label_widths = [5]
     models = ['multi-LSTM']
@@ -128,19 +180,29 @@ for i in range(0, num_runs):
                 results_baseModels_batch.append(model.summary(station=station))
 
             pd.DataFrame(results_baseModels_batch).to_csv('results_files/results_batch_all_1.csv')
-        except:
-            errors_baseModels_batch.append([input_width, label_width, model_name]) 
-    Batch_SA= pd.DataFrame(results_baseModels_batch)
-    Batch_SA= Batch_SA.mean()
-    Batch_SA= Batch_SA.to_dict()
+        except Exception as e:
+            print(f'Error in batch training: {e}')
+            errors_baseModels_batch.append([input_width, label_width, model_name])
+            
+    Batch_SA = pd.DataFrame(results_baseModels_batch)
+    Batch_SA = Batch_SA.mean()
+    Batch_SA = Batch_SA.to_dict()
     combined.append(Batch_SA)
 
+print(f'\nBatch-Temporal results: {combined}')
 
 
-# Batch-Static LSTM-SA
-combined=[]
-for i in range(0, num_runs):
-    print('RUN', i)
+
+# ==============================================================================
+# STRATEGY 3: BATCH-STATIC LSTM (Multiple stations with static attributes)
+# ==============================================================================
+print('\n' + '='*80)
+print('STRATEGY 3: BATCH-STATIC LSTM')
+print('='*80)
+
+combined = []
+for i in range(num_runs):
+    print(f'\nRun {i+1}/{num_runs}')
     input_widths = [5]
     label_widths = [5]
     models = ['multi-LSTM']
@@ -176,9 +238,14 @@ for i in range(0, num_runs):
                 results_baseModels_batch.append(model.summary(station=station))
 
             pd.DataFrame(results_baseModels_batch).to_csv('results_files/results_batch_static_all_1.csv')
-        except:
-            errors_baseModels_batch.append([input_width, label_width, model])
-    Batch_SA= pd.DataFrame(results_baseModels_batch)
-    Batch_SA= Batch_SA.mean()
-    Batch_SA= Batch_SA.to_dict()
+        except Exception as e:
+            print(f'Error in batch-static training: {e}')
+            errors_baseModels_batch.append([input_width, label_width, model_name])
+            
+    Batch_SA = pd.DataFrame(results_baseModels_batch)
+    Batch_SA = Batch_SA.mean()
+    Batch_SA = Batch_SA.to_dict()
     combined.append(Batch_SA)
+
+print(f'\nBatch-Static results: {combined}')
+print('\nEvaluation complete!')

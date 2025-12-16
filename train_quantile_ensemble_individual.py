@@ -121,8 +121,8 @@ for idx, station in enumerate(selected_stations):
     # plt.ylim(0, 1.1)
 
 
-    min_ = camels_data.scaler_test.min_[idx*len(variable_ts)+1]
-    scale_ = camels_data.scaler_test.scale_[idx*len(variable_ts)+1]
+    min_ = camels_data.scaler.min_[idx*len(variable_ts)+1]
+    scale_ = camels_data.scaler.scale_[idx*len(variable_ts)+1]
 
 
     pred = (quantile_ensemble[station].predictions(station)[s:e] - min_)/scale_

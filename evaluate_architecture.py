@@ -1,16 +1,30 @@
+#!/usr/bin/env python
+# coding: utf-8
+"""Evaluate different model architectures for streamflow prediction.
+
+This script compares various neural network architectures:
+- LSTM (Long Short-Term Memory)
+- CNN (Convolutional Neural Network)
+- Bidirectional LSTM
+- Linear models
+"""
+
 import itertools
 import argparse
 import pandas as pd
-
 from datetime import datetime
 
-from src.data import PrepareData
-from src.data import plot_catchments, read_data_from_file
+from src.data import PrepareData, plot_catchments, read_data_from_file
 from src.window import WindowGenerator
 from src.model import Base_Model
 
-# Argument Parser
-parser = argparse.ArgumentParser(description='Train Stage 2')
+# ==============================================================================
+# COMMAND LINE ARGUMENTS
+# ==============================================================================
+
+parser = argparse.ArgumentParser(
+    description='Evaluate model architectures for streamflow prediction (Stage 2)'
+)
 parser.add_argument('--data-dir', type=str, default='/srv/scratch/z5370003/projects/data/camels/dropbox', help='Path to the data directory')
 parser.add_argument('--num-runs', type=int, default=3, help='Number of runs')
 
@@ -19,25 +33,39 @@ args = parser.parse_args()
 data_dir = args.data_dir
 num_runs = args.num_runs
 
+# ==============================================================================
+# DATA LOADING
+# ==============================================================================
 
-# Read timeseries and summary data from data dir
+print(f'Loading data from: {data_dir}')
 timeseries_data, summary_data = read_data_from_file(data_dir)
 
-# Create Dataset
+# Initialize data preparation
 camels_data = PrepareData(timeseries_data, summary_data)
 
-# Plot catchments on map
+# Visualize catchments (optional)
 plot_catchments(camels_data, data_dir)
 
+# ==============================================================================
+# STATION SELECTION
+# ==============================================================================
 
+# Remove duplicate station metadata
 camels_data.summary_data = camels_data.summary_data.T.drop_duplicates().T
-selected_stations = list(camels_data.summary_data[camels_data.summary_data['state_outlet'] == 'SA'].index)
 
-# Enter the model you wish to run or multiple as per requirements. The models can be accessed through the following names:
-#['multi-LSTM', 'multi-linear','multi-CNN', 'multi-Bidirectional-LSTM']
+# Select all stations in South Australia
+selected_stations = list(
+    camels_data.summary_data[camels_data.summary_data['state_outlet'] == 'SA'].index
+)
+print(f'Selected {len(selected_stations)} stations in SA')
 
-# Individual LSTM-SA
-combined= []
+# Available architectures: 'multi-LSTM', 'multi-linear', 'multi-CNN', 'multi-Bidirectional-LSTM'
+
+# ==============================================================================
+# ARCHITECTURE EVALUATION
+# ==============================================================================
+
+combined = []
 for i in range(0, num_runs):
     print('RUN', i)
     input_widths = [5]
@@ -77,13 +105,17 @@ for i in range(0, num_runs):
 
             pd.DataFrame(results_baseModels_variables).to_csv('results_files/results_ensemble_all_1.csv')
 
-        except:
-            errors_baseModels_variables.append([input_width, label_width, station, model])
+        except Exception as e:
+            print(f'Error training {model_name} for {station}: {e}')
+            errors_baseModels_variables.append([input_width, label_width, station, model_name])
         
-        
+        # Note: break limits evaluation to first station (for testing)
         break
 
-    Individual_SA= pd.DataFrame(results_baseModels_variables)
-    # Individual_SA= Individual_SA.mean()
-    # Individual_SA= Individual_SA.to_dict()
+    Individual_SA = pd.DataFrame(results_baseModels_variables)
+    # Results aggregation commented out for individual analysis
+    # Individual_SA = Individual_SA.mean()
+    # Individual_SA = Individual_SA.to_dict()
     # combined.append(Individual_SA)
+
+print('\nArchitecture evaluation complete!')

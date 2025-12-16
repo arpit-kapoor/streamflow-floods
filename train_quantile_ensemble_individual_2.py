@@ -232,8 +232,8 @@ for n in tqdm.trange(args.num_runs):
 
         # Extract scaling parameters for inverse transformation
         # Index [1] corresponds to streamflow_MLd_inclInfilled in the feature array
-        _min = camels_data.scaler_test.min_[1]
-        _scale = camels_data.scaler_test.scale_[1]
+        _min = camels_data.scaler.min_[1]
+        _scale = camels_data.scaler.scale_[1]
 
         # Evaluate model performance on test set for all three quantiles
         summary_regular, summary_q05, summary_q95, conf_score = quantile_ensemble[station].summary(

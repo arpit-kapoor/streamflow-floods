@@ -202,8 +202,8 @@ def evaluate_station_model(station, quantile_model, multi_window, test_min, test
     # Compute event detection and timing metrics
     # Use maximum over forecast horizon for event detection
     # predictions() returns normalized values, convert back to original scale
-    predictions = quantile_model.predictions(station) * test_scale + test_min
-    actual_values = multi_window.test_windows(station) * test_scale + test_min
+    predictions = (quantile_model.predictions(station) - test_min) / test_scale
+    actual_values = (multi_window.test_windows(station) - test_min) / test_scale
     
     # Get max over forecast horizon for each timestep
     pred_max = predictions.max(axis=1)  # shape: (n_samples, 3) for [q05, median, q95]
@@ -216,7 +216,7 @@ def evaluate_station_model(station, quantile_model, multi_window, test_min, test
         q_pred_q05=pred_max[:, 0],
         q_pred_q95=pred_max[:, 2],
         threshold=train_threshold,
-        q=0.95,
+        q=args.flood_threshold_percentile,
         min_duration=1,
         merge_gap=1,
         tau=1

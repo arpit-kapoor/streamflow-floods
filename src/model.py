@@ -835,7 +835,7 @@ class QuantileEnsemble(Model):
         preds_regular = self.regular.predictions(station)
         preds_q05 = self.q05.predictions(station)
         preds_q95 = self.q95.predictions(station)
-        return np.stack([preds_regular, preds_q05, preds_q95], axis=-1)
+        return np.stack([preds_q05, preds_regular, preds_q95], axis=-1)
 
     def test_MSE(self, station=None):
         preds = self.predictions(data='test', station=station)
@@ -887,7 +887,7 @@ class QuantileEnsemble(Model):
             _min = kwargs.get('_min', None)
             _scale = kwargs.get('_scale', None)
 
-            preds_q05 = predictions[...,1]
+            preds_q05 = predictions[...,0]
             preds_q95 = predictions[...,2]
 
             if _min is not None and _scale is not None:
