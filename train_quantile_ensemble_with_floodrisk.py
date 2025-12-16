@@ -32,6 +32,7 @@ from src.flood_risk import (
     calculate_prediction_quality
 )
 from src.visualization import plot_flood_risk_analysis
+from src.event_metrics import compute_multi_quantile_event_metrics
 
 
 # ==============================================================================
@@ -161,7 +162,7 @@ def train_station_model(station, camels_data, variable_ts, args):
     return quantile_model, multi_window
 
 
-def evaluate_station_model(station, quantile_model, test_min, test_scale):
+def evaluate_station_model(station, quantile_model, multi_window, test_min, test_scale, train_threshold=None):
     """
     Evaluate model performance for a station.
     
@@ -171,15 +172,19 @@ def evaluate_station_model(station, quantile_model, test_min, test_scale):
         Station identifier
     quantile_model : QuantileEnsemble
         Trained quantile ensemble model
+    multi_window : MultiWindow
+        Window object containing test data
     test_min : float
         Minimum value for inverse scaling
     test_scale : float
         Scale value for inverse scaling
+    train_threshold : float, optional
+        Pre-computed threshold from training data (Q95)
     
     Returns:
     --------
-    tuple : (summary_regular, summary_q05, summary_q95, conf_metrics)
-        Performance summaries for each quantile and confidence metrics dictionary
+    tuple : (summary_regular, summary_q05, summary_q95, conf_metrics, event_metrics)
+        Performance summaries for each quantile, confidence metrics, and event detection metrics
     """
     summary_regular, summary_q05, summary_q95, conf_metrics = quantile_model.summary(
         station, 
@@ -194,7 +199,39 @@ def evaluate_station_model(station, quantile_model, test_min, test_scale):
     print(f'  Raw IS:          {conf_metrics["raw_IS"]:.4f}  (lower is better)')
     print(f'  Coverage:        {conf_metrics["coverage"]:.2%}  (target: 90%)')
     
-    return summary_regular, summary_q05, summary_q95, conf_metrics
+    # Compute event detection and timing metrics
+    # Use maximum over forecast horizon for event detection
+    # predictions() returns normalized values, convert back to original scale
+    predictions = quantile_model.predictions(station) * test_scale + test_min
+    actual_values = multi_window.test_windows(station) * test_scale + test_min
+    
+    # Get max over forecast horizon for each timestep
+    pred_max = predictions.max(axis=1)  # shape: (n_samples, 3) for [q05, median, q95]
+    actual_max = actual_values.max(axis=1)  # shape: (n_samples,)
+    
+    # Compute event metrics for all quantiles
+    event_metrics = compute_multi_quantile_event_metrics(
+        q_obs=actual_max,
+        q_pred_median=pred_max[:, 1],
+        q_pred_q05=pred_max[:, 0],
+        q_pred_q95=pred_max[:, 2],
+        threshold=train_threshold,
+        q=0.95,
+        min_duration=1,
+        merge_gap=1,
+        tau=1
+    )
+    
+    # Print event detection metrics (using median forecast)
+    median_events = event_metrics['median']
+    print(f'Event Detection (median forecast):')
+    print(f'  Threshold: {median_events["threshold"]:.2f} (Q95)')
+    print(f'  Observed events: {median_events["n_obs_events"]}, Predicted events: {median_events["n_pred_events"]}')
+    print(f'  POD: {median_events["POD"]:.3f}, FAR: {median_events["FAR"]:.3f}, CSI: {median_events["CSI"]:.3f}')
+    if not np.isnan(median_events['peak_dt_mae']):
+        print(f'  Peak timing MAE: {median_events["peak_dt_mae"]:.2f} days')
+    
+    return summary_regular, summary_q05, summary_q95, conf_metrics, event_metrics
 
 
 
@@ -524,25 +561,30 @@ def main():
             quantile_ensemble[station] = quantile_model
             
             # Get scaling parameters for individual station
-            # scaler_test has only 6 features (one station), streamflow is at index 1
-            test_min = camels_data.scaler_test.min_[1]
-            test_scale = camels_data.scaler_test.scale_[1]
-            
-            # Evaluate model
-            summary_regular, summary_q05, summary_q95, conf_metrics = evaluate_station_model(
-                station, quantile_model, test_min, test_scale
-            )
+            # Use TRAIN scaler for inverse transform (not test scaler!)
+            # scaler has only 6 features (one station), streamflow is at index 1
+            test_min = camels_data.scaler.min_[1]
+            test_scale = camels_data.scaler.scale_[1]
             
             # Calculate flood threshold (compute for all runs to ensure consistency)
             threshold_prob, threshold, threshold_year = calc_flood_threshold(
                 station, train_df, test_min, test_scale,
                 top=args.flood_threshold_percentile
             )
+            
+            # Evaluate model (including event detection metrics using training threshold)
+            summary_regular, summary_q05, summary_q95, conf_metrics, event_metrics = evaluate_station_model(
+                station, quantile_model, multi_window, test_min, test_scale, 
+                train_threshold=threshold
+            )
             # Store threshold only on first run to avoid duplicates
             if n == 0:
                 flood_thresholds[station] = threshold
             
-            # Store individual station results
+            # Store individual station results with event metrics
+            median_event = event_metrics['median']
+            q95_event = event_metrics['q95']
+            
             station_result = {
                 'run': n + 1,
                 'station_id': station,
@@ -557,7 +599,20 @@ def main():
                 'raw_IS': conf_metrics['raw_IS'],
                 'coverage': conf_metrics['coverage'],
                 'flood_threshold': threshold,
-                'threshold_percentile': args.flood_threshold_percentile
+                'threshold_percentile': args.flood_threshold_percentile,
+                # Event detection metrics (median forecast)
+                'n_obs_events': median_event['n_obs_events'],
+                'n_pred_events_median': median_event['n_pred_events'],
+                'POD_median': median_event['POD'],
+                'FAR_median': median_event['FAR'],
+                'CSI_median': median_event['CSI'],
+                'peak_dt_mae_median': median_event['peak_dt_mae'],
+                # Event detection for Q95 forecast (typically best for extremes)
+                'n_pred_events_q95': q95_event['n_pred_events'],
+                'POD_q95': q95_event['POD'],
+                'FAR_q95': q95_event['FAR'],
+                'CSI_q95': q95_event['CSI'],
+                'peak_dt_mae_q95': q95_event['peak_dt_mae']
             }
             individual_station_results.append(station_result)
             
@@ -599,7 +654,68 @@ def main():
             summary_data_q95, summary_conf_score, flood_thresholds, summary_cols,
             individual_station_results=individual_station_results
         )
-        print('\nTraining and flood risk analysis complete!')
+        
+        # Print comprehensive summary including event detection metrics
+        print('\n' + '='*80)
+        print('COMPREHENSIVE PERFORMANCE SUMMARY')
+        print('='*80)
+        
+        if individual_station_results:
+            # Calculate averages across all stations and runs
+            avg_mse = np.nanmean([r['MSE_median'] for r in individual_station_results])
+            avg_nse = np.nanmean([r['NSE_median'] for r in individual_station_results])
+            avg_isss = np.nanmean([r['ISSS'] for r in individual_station_results])
+            avg_coverage = np.nanmean([r['coverage'] for r in individual_station_results])
+            
+            # Average event detection metrics (median forecast)
+            avg_pod_median = np.nanmean([r['POD_median'] for r in individual_station_results])
+            avg_far_median = np.nanmean([r['FAR_median'] for r in individual_station_results])
+            avg_csi_median = np.nanmean([r['CSI_median'] for r in individual_station_results])
+            avg_timing_mae_median = np.nanmean([r['peak_dt_mae_median'] for r in individual_station_results if not np.isnan(r['peak_dt_mae_median'])])
+            
+            # Average event detection metrics (q95 forecast)
+            avg_pod_q95 = np.nanmean([r['POD_q95'] for r in individual_station_results])
+            avg_far_q95 = np.nanmean([r['FAR_q95'] for r in individual_station_results])
+            avg_csi_q95 = np.nanmean([r['CSI_q95'] for r in individual_station_results])
+            avg_timing_mae_q95 = np.nanmean([r['peak_dt_mae_q95'] for r in individual_station_results if not np.isnan(r['peak_dt_mae_q95'])])
+            
+            # Total event counts
+            total_obs_events = sum([r['n_obs_events'] for r in individual_station_results])
+            total_pred_events_median = sum([r['n_pred_events_median'] for r in individual_station_results])
+            total_pred_events_q95 = sum([r['n_pred_events_q95'] for r in individual_station_results])
+            
+            print(f'\nPoint Prediction Performance (Median Forecast):')
+            print(f'  Average MSE:  {avg_mse:.4f}')
+            print(f'  Average NSE:  {avg_nse:.4f}')
+            
+            print(f'\nUncertainty Quantification Performance:')
+            print(f'  Average ISSS (R²-like): {avg_isss:.4f}  (1.0=perfect, 0.0=baseline)')
+            print(f'  Average Coverage:       {avg_coverage:.2%}  (target: 90%)')
+            
+            print(f'\nEvent Detection Performance (Median Forecast):')
+            print(f'  Total Observed Events:  {total_obs_events}')
+            print(f'  Total Predicted Events: {total_pred_events_median}')
+            print(f'  Average POD (Probability of Detection): {avg_pod_median:.3f}')
+            print(f'  Average FAR (False Alarm Ratio):        {avg_far_median:.3f}')
+            print(f'  Average CSI (Critical Success Index):   {avg_csi_median:.3f}')
+            if not np.isnan(avg_timing_mae_median):
+                print(f'  Average Peak Timing MAE:                {avg_timing_mae_median:.2f} days')
+            
+            print(f'\nEvent Detection Performance (Q95 Forecast):')
+            print(f'  Total Predicted Events: {total_pred_events_q95}')
+            print(f'  Average POD: {avg_pod_q95:.3f}')
+            print(f'  Average FAR: {avg_far_q95:.3f}')
+            print(f'  Average CSI: {avg_csi_q95:.3f}')
+            if not np.isnan(avg_timing_mae_q95):
+                print(f'  Average Peak Timing MAE: {avg_timing_mae_q95:.2f} days')
+            
+            print(f'\nDataset Summary:')
+            print(f'  Total Stations Processed: {len(set([r["station_id"] for r in individual_station_results]))}')
+            print(f'  Total Runs: {args.num_runs}')
+            print(f'  Total Station×Run Results: {len(individual_station_results)}')
+        
+        print('='*80)
+        print('\n✓ Training and flood risk analysis complete!')
     else:
         print('\nNo valid results obtained. Please check your data and configuration.')
 
