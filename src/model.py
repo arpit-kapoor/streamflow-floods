@@ -35,7 +35,7 @@ class QuantileLoss():
     
     @staticmethod
     def qloss_50(y_true, y_pred):
-        return QuantileLoss.quantile_loss(0.5, y_true, y_pred)
+        return tf.functions.mean_squared_error(y_true, y_pred)
     
     @staticmethod
     def qloss_70(y_true, y_pred):
@@ -843,11 +843,35 @@ class QuantileEnsemble(Model):
         return mean_squared_error(test_array, preds)
     
     def interval_score(self, target, pred_low, pred_high, alpha=0.1):
-        # Calculate the interval score
+        """Calculate raw interval score."""
         L = pred_low
         U = pred_high
         IS = (U - L) + (2/alpha) * np.maximum(0, L - target) + (2/alpha) * np.maximum(0, target - U)
         return IS
+    
+    def interval_score_skill_score(self, target, pred_low, pred_high, alpha=0.1):
+        """
+        Calculate Interval Score Skill Score (ISSS).
+        
+        Similar to R² or NSE: 1.0 = perfect, 0.0 = baseline, <0 = worse than baseline
+        Baseline uses climatological quantiles (constant quantiles from training data).
+        """
+        # Model score
+        IS_model = self.interval_score(target, pred_low, pred_high, alpha)
+        IS_model_mean = np.mean(IS_model)
+        
+        # Baseline (climatological quantiles)
+        target_q_low = np.percentile(target, alpha/2 * 100)
+        target_q_high = np.percentile(target, (1 - alpha/2) * 100)
+        baseline_low = np.full_like(target, target_q_low)
+        baseline_high = np.full_like(target, target_q_high)
+        
+        IS_baseline = self.interval_score(target, baseline_low, baseline_high, alpha)
+        IS_baseline_mean = np.mean(IS_baseline)
+        
+        # Skill score
+        ISSS = 1 - (IS_model_mean / IS_baseline_mean)
+        return ISSS
 
     def summary(self, station=None, **kwargs):
 
@@ -871,17 +895,41 @@ class QuantileEnsemble(Model):
                 preds_q95 = (preds_q95 - _min)/_scale
                 actuals = (actuals - _min)/_scale
 
-            conf = []
-            for i in range(self.window.label_width):
-                # window_flag = (actuals[:, i] > preds_q05[:, i]) & (actuals[:, i] < preds_q95[:, i])
-                # conf.append(np.abs(window_flag.sum()/window_flag.shape[0] - 0.90))
-                conf.append(self.interval_score(target=actuals[:, i],
-                                                pred_low=preds_q05[:, i], 
-                                                pred_high=preds_q95[:, i], 
-                                                alpha=0.1))
+            # Calculate multiple confidence metrics
+            isss_scores = []  # Skill score (like R²)
+            raw_is_scores = []  # Raw interval score
+            coverage_scores = []  # Coverage percentage
             
-            conf = np.mean(conf)
-
-            return [summary_regular, summary_q05, summary_q95, conf]
+            for i in range(self.window.label_width):
+                # Interval Score Skill Score (R²-like)
+                isss = self.interval_score_skill_score(
+                    target=actuals[:, i],
+                    pred_low=preds_q05[:, i], 
+                    pred_high=preds_q95[:, i], 
+                    alpha=0.1
+                )
+                isss_scores.append(isss)
+                
+                # Raw interval score (for reference)
+                raw_is = np.mean(self.interval_score(
+                    target=actuals[:, i],
+                    pred_low=preds_q05[:, i], 
+                    pred_high=preds_q95[:, i], 
+                    alpha=0.1
+                ))
+                raw_is_scores.append(raw_is)
+                
+                # Coverage percentage
+                covered = (actuals[:, i] >= preds_q05[:, i]) & (actuals[:, i] <= preds_q95[:, i])
+                coverage_scores.append(np.mean(covered))
+            
+            # Return averaged scores as dictionary
+            conf_metrics = {
+                'ISSS': np.mean(isss_scores),  # Like R² or NSE
+                'raw_IS': np.mean(raw_is_scores),  # Raw score
+                'coverage': np.mean(coverage_scores)  # Should be ~0.90 for 90% intervals
+            }
+            
+            return [summary_regular, summary_q05, summary_q95, conf_metrics]
         
         return [summary_regular, summary_q05, summary_q95]

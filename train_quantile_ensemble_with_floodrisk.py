@@ -178,10 +178,10 @@ def evaluate_station_model(station, quantile_model, test_min, test_scale):
     
     Returns:
     --------
-    tuple : (summary_regular, summary_q05, summary_q95, conf_score)
-        Performance summaries for each quantile and confidence score
+    tuple : (summary_regular, summary_q05, summary_q95, conf_metrics)
+        Performance summaries for each quantile and confidence metrics dictionary
     """
-    summary_regular, summary_q05, summary_q95, conf_score = quantile_model.summary(
+    summary_regular, summary_q05, summary_q95, conf_metrics = quantile_model.summary(
         station, 
         _min=test_min, 
         _scale=test_scale, 
@@ -189,8 +189,12 @@ def evaluate_station_model(station, quantile_model, test_min, test_scale):
     )
     
     print(f'Performance - MSE: {summary_regular["MSE"]:.4f}, NSE: {summary_regular["NSE"]:.4f}')
+    print(f'Confidence Metrics:')
+    print(f'  ISSS (R²-like):  {conf_metrics["ISSS"]:.4f}  (1.0=perfect, 0.0=baseline)')
+    print(f'  Raw IS:          {conf_metrics["raw_IS"]:.4f}  (lower is better)')
+    print(f'  Coverage:        {conf_metrics["coverage"]:.2%}  (target: 90%)')
     
-    return summary_regular, summary_q05, summary_q95, conf_score
+    return summary_regular, summary_q05, summary_q95, conf_metrics
 
 
 
@@ -295,7 +299,8 @@ def process_flood_risk_for_station(station, station_name, quantile_model, multi_
 
 
 def export_results(output_dir, summary_data_reg, summary_data_q05, 
-                  summary_data_q95, summary_conf_score, flood_thresholds, summary_cols):
+                  summary_data_q95, summary_conf_score, flood_thresholds, summary_cols,
+                  individual_station_results=None):
     """
     Export aggregated results to CSV files.
     
@@ -310,17 +315,19 @@ def export_results(output_dir, summary_data_reg, summary_data_q05,
     summary_data_q95 : list
         Upper quantile results
     summary_conf_score : list
-        Confidence scores
+        Confidence metrics (list of dictionaries with ISSS, raw_IS, coverage)
     flood_thresholds : dict
         Flood thresholds by station
     summary_cols : list
         Column names for summary metrics
+    individual_station_results : list, optional
+        List of dictionaries containing individual station results per run
     """
     # Convert to DataFrames
     results_reg_df = pd.DataFrame(summary_data_reg)
     results_q05_df = pd.DataFrame(summary_data_q05)
     results_q95_df = pd.DataFrame(summary_data_q95)
-    results_conf_score_df = pd.DataFrame(summary_conf_score, columns=['conf_score'])
+    results_conf_score_df = pd.DataFrame(summary_conf_score)
     
     # Display results
     print('\n' + '='*80)
@@ -332,7 +339,7 @@ def export_results(output_dir, summary_data_reg, summary_data_q05,
     print(results_q05_df)
     print('\nUpper Quantile (Q95) Predictions:')
     print(results_q95_df)
-    print('\nConfidence Score:')
+    print('\nConfidence Metrics:')
     print(results_conf_score_df)
     print('='*80)
     
@@ -340,7 +347,7 @@ def export_results(output_dir, summary_data_reg, summary_data_q05,
     results_reg_df.to_csv(f'{output_dir}/results_reg.csv', index=True)
     results_q05_df.to_csv(f'{output_dir}/results_q05.csv', index=True)
     results_q95_df.to_csv(f'{output_dir}/results_q95.csv', index=True)
-    results_conf_score_df.to_csv(f'{output_dir}/results_conf_score.csv', index=True)
+    results_conf_score_df.to_csv(f'{output_dir}/results_conf_metrics.csv', index=True)
     
     # Save flood thresholds
     threshold_df = pd.DataFrame.from_dict(
@@ -349,6 +356,17 @@ def export_results(output_dir, summary_data_reg, summary_data_q05,
         columns=['threshold']
     )
     threshold_df.to_csv(f'{output_dir}/flood_thresholds.csv')
+    
+    # Export individual station results if provided
+    if individual_station_results:
+        individual_df = pd.DataFrame(individual_station_results)
+        individual_df.to_csv(f'{output_dir}/results_individual_stations.csv', index=False)
+        
+        print('\n' + '='*80)
+        print('INDIVIDUAL STATION RESULTS')
+        print('='*80)
+        print(individual_df.to_string())
+        print('='*80)
     
     print(f'\nResults exported to: {output_dir}')
 
@@ -383,7 +401,7 @@ parser.add_argument('--num-runs', type=int, default=1,
                     help='Number of training runs')
 
 # Flood risk configuration  
-parser.add_argument('--flood-threshold-percentile', type=float, default=0.95,
+parser.add_argument('--flood-threshold-percentile', type=float, default=0.90,
                     help='Percentile for flood threshold (0-1)')
 
 args = parser.parse_args()
@@ -458,6 +476,7 @@ def main():
     summary_conf_score = []
     quantile_ensemble = {}
     flood_thresholds = {}
+    individual_station_results = []  # Track individual station results
     
     # Create output directory
     if args.station_ids:
@@ -510,24 +529,46 @@ def main():
             test_scale = camels_data.scaler_test.scale_[1]
             
             # Evaluate model
-            summary_regular, summary_q05, summary_q95, conf_score = evaluate_station_model(
+            summary_regular, summary_q05, summary_q95, conf_metrics = evaluate_station_model(
                 station, quantile_model, test_min, test_scale
             )
             
-            # Store results
+            # Calculate flood threshold (compute for all runs to ensure consistency)
+            threshold_prob, threshold, threshold_year = calc_flood_threshold(
+                station, train_df, test_min, test_scale,
+                top=args.flood_threshold_percentile
+            )
+            # Store threshold only on first run to avoid duplicates
+            if n == 0:
+                flood_thresholds[station] = threshold
+            
+            # Store individual station results
+            station_result = {
+                'run': n + 1,
+                'station_id': station,
+                'station_name': station_display_name,
+                'MSE_median': summary_regular['MSE'],
+                'NSE_median': summary_regular['NSE'],
+                'MSE_q05': summary_q05['MSE'],
+                'NSE_q05': summary_q05['NSE'],
+                'MSE_q95': summary_q95['MSE'],
+                'NSE_q95': summary_q95['NSE'],
+                'ISSS': conf_metrics['ISSS'],
+                'raw_IS': conf_metrics['raw_IS'],
+                'coverage': conf_metrics['coverage'],
+                'flood_threshold': threshold,
+                'threshold_percentile': args.flood_threshold_percentile
+            }
+            individual_station_results.append(station_result)
+            
+            # Store results for aggregation
             results_regular.append(summary_regular)
             results_q05.append(summary_q05)
             results_q95.append(summary_q95)
-            results_conf_score.append(conf_score)
+            results_conf_score.append(conf_metrics)
             
-            # Process flood risk (only on first run)
+            # Process flood risk visualization and outputs (only on first run)
             if n == 0:
-                threshold_prob, threshold, threshold_year = calc_flood_threshold(
-                    station, train_df, test_min, test_scale,
-                    top=args.flood_threshold_percentile
-                )
-                flood_thresholds[station] = threshold
-                
                 process_flood_risk_for_station(
                     station, station_display_name, quantile_model, multi_window,
                     test_min, test_scale, threshold, args, output_dir
@@ -539,22 +580,24 @@ def main():
             results_q05_agg = pd.DataFrame(results_q05)[summary_cols].mean(skipna=True).to_dict()
             results_q95_agg = pd.DataFrame(results_q95)[summary_cols].mean(skipna=True).to_dict()
             
-            # Calculate mean confidence score with NaN handling
-            conf_score_mean = np.nanmean(results_conf_score) if results_conf_score else 0.0
+            # Calculate mean confidence metrics from list of dictionaries
+            conf_metrics_df = pd.DataFrame(results_conf_score)
+            conf_metrics_mean = conf_metrics_df.mean(skipna=True).to_dict()
             
             # Store aggregated results
             summary_data_reg.append(results_reg)
             summary_data_q05.append(results_q05_agg)
             summary_data_q95.append(results_q95_agg)
-            summary_conf_score.append(conf_score_mean)
+            summary_conf_score.append(conf_metrics_mean)
             
-            print(f'\n✓ Run {n+1} complete - MSE (median): {results_reg["MSE"]:.4f}')
+            print(f'\n✓ Run {n+1} complete - MSE (median): {results_reg["MSE"]:.4f}, ISSS: {conf_metrics_mean["ISSS"]:.4f}')
     
     # Export all results
     if summary_data_reg:
         export_results(
             output_dir, summary_data_reg, summary_data_q05,
-            summary_data_q95, summary_conf_score, flood_thresholds, summary_cols
+            summary_data_q95, summary_conf_score, flood_thresholds, summary_cols,
+            individual_station_results=individual_station_results
         )
         print('\nTraining and flood risk analysis complete!')
     else:

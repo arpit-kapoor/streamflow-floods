@@ -59,8 +59,9 @@ def calc_flood_threshold(station, train_df, scaler_min, scaler_scale, top=0.20):
     # Find threshold corresponding to specified exceedance probability
     # Filter for events exceeding the threshold probability
     threshold_candidates = streamflow_data.loc[
-        streamflow_data.exceedance_prob > top
+        streamflow_data.exceedance_prob < (1-top)
     ]
+    print(f'Exceedance probability cutoff: {1-top:.2f} for station {station}')
     
     # Check if any candidates exist
     if len(threshold_candidates) == 0:
@@ -68,7 +69,7 @@ def calc_flood_threshold(station, train_df, scaler_min, scaler_scale, top=0.20):
         threshold_point = streamflow_data.reset_index().values[0]
     else:
         # Use the first candidate (lowest streamflow among those exceeding threshold)
-        threshold_point = threshold_candidates.reset_index().values[0]
+        threshold_point = threshold_candidates.reset_index().values[-1]
     
     threshold_year = threshold_point[0]
     threshold = threshold_point[1]
